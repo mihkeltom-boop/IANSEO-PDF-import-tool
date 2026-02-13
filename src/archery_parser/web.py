@@ -46,14 +46,49 @@ def _process_pdf_bytes(pdf_bytes: bytes, filename: str) -> tuple:
     Raises:
         ValueError on parse failures.
     """
+    if not pdf_bytes:
+        raise ValueError("Uploaded file is empty (0 bytes).")
+
+    logger.info("web  Received %s (%d bytes)", filename, len(pdf_bytes))
+
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(pdf_bytes)
+        tmp.flush()
         tmp_path = Path(tmp.name)
 
     try:
         lines = extract_lines(tmp_path)
+        logger.info("web  reader: %d lines extracted from %s", len(lines), filename)
+
+        if not lines:
+            raise ValueError(
+                f"No text could be extracted from '{filename}'. "
+                "The PDF may be image-based (scanned) rather than text-based."
+            )
+
         meta, sections = detect_sections(lines)
+        logger.info(
+            "web  detector: %d sections found in %s", len(sections), filename
+        )
+
+        if not sections:
+            # Log the first few lines for debugging
+            sample = []
+            for line in lines[:10]:
+                sample.append(" ".join(w.text for w in line))
+            logger.warning(
+                "web  No sections detected. First 10 lines: %s", sample
+            )
+            raise ValueError(
+                f"No competition sections found in '{filename}'. "
+                "Make sure this is an Ianseo qualification protocol PDF."
+            )
+
         records = assemble_athletes(sections)
+        logger.info(
+            "web  assembler: %d athletes found in %s", len(records), filename
+        )
+
         return meta, records
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -210,6 +245,14 @@ def convert():
         if first_meta is None:
             first_meta = meta
 
+        if not records:
+            return render_template_string(
+                _UPLOAD_HTML,
+                error=f"No athletes could be parsed from '{file.filename}'. "
+                      f"The PDF was read successfully ({meta.name}) but no "
+                      f"athlete data was found in the detected sections.",
+            ), 400
+
         rows = transform(records, meta)
         all_rows.extend(rows)
         filenames_processed.append(file.filename)
@@ -247,8 +290,9 @@ def health():
 
 def create_app():
     """Application factory for gunicorn / Railway."""
+    log_level = os.environ.get("LOG_LEVEL", "DEBUG").upper()
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, log_level, logging.DEBUG),
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
