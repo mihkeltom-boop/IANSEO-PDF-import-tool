@@ -172,6 +172,48 @@ _DATE_RE = re.compile(r"(\d{2})-(\d{2})-(\d{4})")
 _EVENT_CODE_RE = re.compile(r"\(([^)]+)\)")
 
 
+def _parse_date(first: str, second: str, year: str) -> date:
+    """
+    Parse a date from two ambiguous values and a year.
+
+    The input format could be DD-MM-YYYY or MM-DD-YYYY.
+    Use heuristics to determine which:
+    - If first > 12: it must be day (format is DD-MM-YYYY)
+    - If second > 12: it must be day (format is MM-DD-YYYY)
+    - If both ≤ 12: ambiguous, default to DD-MM-YYYY (Estonian standard)
+
+    Args:
+        first: First two-digit value (could be day or month)
+        second: Second two-digit value (could be month or day)
+        year: Four-digit year
+
+    Returns:
+        Parsed date object
+
+    Raises:
+        ValueError: If date values are invalid
+    """
+    val1 = int(first)
+    val2 = int(second)
+    yyyy = int(year)
+
+    # Determine format based on which value could be a month
+    if val1 > 12:
+        # first must be day, second must be month (DD-MM-YYYY)
+        return date(yyyy, val2, val1)
+    elif val2 > 12:
+        # second must be day, first must be month (MM-DD-YYYY)
+        return date(yyyy, val1, val2)
+    else:
+        # Both ≤ 12: ambiguous. Default to DD-MM-YYYY (Estonian standard).
+        # Try DD-MM-YYYY first, fall back to MM-DD-YYYY if invalid.
+        try:
+            return date(yyyy, val2, val1)
+        except ValueError:
+            # Invalid day for that month, try MM-DD-YYYY instead
+            return date(yyyy, val1, val2)
+
+
 def _parse_competition_header(header_lines: list[list[Word]]) -> CompetitionMeta:
     """
     Extract CompetitionMeta from the first three lines of the document.
@@ -210,11 +252,17 @@ def _parse_competition_header(header_lines: list[list[Word]]) -> CompetitionMeta
         else:
             venue = line3_text.strip()
 
-    # Parse all DD-MM-YYYY dates from the line
+    # Parse all dates from the line (handles both DD-MM-YYYY and MM-DD-YYYY)
     date_matches = _DATE_RE.findall(line3_text)
     dates: list[date] = []
-    for dd, mm, yyyy in date_matches:
-        dates.append(date(int(yyyy), int(mm), int(dd)))
+    for first, second, year in date_matches:
+        try:
+            dates.append(_parse_date(first, second, year))
+        except ValueError as e:
+            logger.warning(
+                "detector  Failed to parse date '%s-%s-%s': %s",
+                first, second, year, e
+            )
 
     date_start = dates[0] if len(dates) >= 1 else date.today()
     date_end   = dates[1] if len(dates) >= 2 else date_start
