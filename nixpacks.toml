@@ -3,8 +3,11 @@ nixPkgs = ["python313"]
 
 [phases.install]
 cmds = [
+    "echo 'Files in /app:' && ls -la /app",
+    "echo 'Installing dependencies...'",
     "pip install --upgrade pip setuptools wheel",
-    "pip install -r requirements.txt"
+    "pip install pdfplumber>=0.10 flask>=3.0 gunicorn>=21.0",
+    "echo 'Checking if src exists:' && ls -la /app/src || echo 'src directory not found!'"
 ]
 
 [start]

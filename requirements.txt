@@ -1,8 +1,6 @@
 # Runtime dependencies for deployment
 # (Development: pip install -e ".[dev]" uses pyproject.toml)
+# Note: archery_parser package is imported via PYTHONPATH=/app/src
 pdfplumber>=0.10
 flask>=3.0
 gunicorn>=21.0
-
-# Install the local package (must be last)
-.

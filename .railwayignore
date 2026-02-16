@@ -1,0 +1,27 @@
+# Railway ignore file - specify what NOT to copy
+# Everything else will be copied
+
+# Version control
+.git/
+
+# Test files (not needed in production)
+tests/
+.pytest_cache/
+
+# Development files
+*.md
+!README.md
+
+# Sample data (large files)
+2025 võistlused/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Build artifacts
+dist/
+build/
