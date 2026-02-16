@@ -23,6 +23,7 @@ Public API:
 
 from __future__ import annotations
 
+import enum
 import logging
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,17 @@ from archery_parser.models import CompetitionMeta, SectionContext
 from archery_parser.reader import Word
 
 logger = logging.getLogger(__name__)
+
+
+class _State(enum.Enum):
+    """States for the section-detection state machine."""
+    HEADER = "HEADER"
+    BETWEEN = "BETWEEN"
+    EXPECT_TITLE = "EXPECT_TITLE"
+    EXPECT_COL_HDR = "EXPECT_COL_HDR"
+    ATHLETE_DATA = "ATHLETE_DATA"
+    SKIP_SECTION = "SKIP_SECTION"
+
 
 # ---------------------------------------------------------------------------
 # RawSection  (output of this module, input to Assembler)
@@ -258,11 +270,20 @@ def detect_sections(
     if len(lines) < 3:
         raise ValueError("Input too short to contain a competition header.")
 
+    # Early validation: the third line should contain "From DD-MM-YYYY"
+    # which is characteristic of Ianseo qualification protocol headers.
+    line3_text = " ".join(w.text for w in lines[2])
+    if "From" not in line3_text or not _DATE_RE.search(line3_text):
+        raise ValueError(
+            "This does not appear to be an Ianseo qualification protocol: "
+            "expected 'From DD-MM-YYYY' in the third line of the document."
+        )
+
     sections: list[RawSection] = []
     meta: CompetitionMeta | None = None
 
     # State machine
-    state = "HEADER"
+    state = _State.HEADER
     header_buf: list[list[Word]] = []
 
     # Per-section working state
@@ -317,7 +338,7 @@ def detect_sections(
         # ----------------------------------------------------------------
         # HEADER  — collect first 3 non-empty lines
         # ----------------------------------------------------------------
-        if state == "HEADER":
+        if state is _State.HEADER:
             header_buf.append(line)
             if len(header_buf) == 3:
                 try:
@@ -325,7 +346,7 @@ def detect_sections(
                     logger.info("detector  Competition: %s", meta.name)
                 except Exception as exc:
                     raise ValueError(f"Failed to parse competition header: {exc}") from exc
-                state = "BETWEEN"
+                state = _State.BETWEEN
             continue
 
         # ----------------------------------------------------------------
@@ -334,33 +355,33 @@ def detect_sections(
         arrow_count = _match_after_arrows(tokens)
         if arrow_count is not None:
             # Finalise any open section
-            if state == "ATHLETE_DATA":
+            if state is _State.ATHLETE_DATA:
                 _finalise_section()
-            elif state in ("EXPECT_COL_HDR",):
+            elif state is _State.EXPECT_COL_HDR:
                 # Section title was parsed but no athlete data yet — still finalise
                 # (edge case: empty section)
                 _finalise_section()
             else:
                 _reset_section()
             current_arrow_count = arrow_count
-            state = "EXPECT_TITLE"
+            state = _State.EXPECT_TITLE
             continue
 
         # ----------------------------------------------------------------
-        if state == "BETWEEN":
+        if state is _State.BETWEEN:
             continue  # ignore everything until first "After N Arrows"
 
         # ----------------------------------------------------------------
         # EXPECT_TITLE  — next non-empty line is the section title
         # ----------------------------------------------------------------
-        if state == "EXPECT_TITLE":
+        if state is _State.EXPECT_TITLE:
             bow_prefix = tokens[0]
             if bow_prefix not in BOW_TYPE:
                 logger.warning(
                     "detector  Unknown bow type '%s' in section title '%s' — section skipped.",
                     bow_prefix, " ".join(tokens),
                 )
-                state = "SKIP_SECTION"
+                state = _State.SKIP_SECTION
                 continue
 
             remaining = tokens[1:]
@@ -370,32 +391,32 @@ def detect_sections(
                     "detector  Cannot determine class code from section title '%s' — section skipped.",
                     " ".join(tokens),
                 )
-                state = "SKIP_SECTION"
+                state = _State.SKIP_SECTION
                 continue
 
             current_bow_prefix = bow_prefix
             current_class_code = class_code
-            state = "EXPECT_COL_HDR"
+            state = _State.EXPECT_COL_HDR
             continue
 
         # ----------------------------------------------------------------
         # SKIP_SECTION  — discard until "After N Arrows" (handled above)
         # ----------------------------------------------------------------
-        if state == "SKIP_SECTION":
+        if state is _State.SKIP_SECTION:
             continue
 
         # ----------------------------------------------------------------
         # EXPECT_COL_HDR  — collect distance labels; first athlete line
         #                    triggers transition to ATHLETE_DATA
         # ----------------------------------------------------------------
-        if state == "EXPECT_COL_HDR":
+        if state is _State.EXPECT_COL_HDR:
             if _is_column_header_line(tokens):
                 current_distances.extend(_extract_distances_from_line(tokens))
                 # stay in EXPECT_COL_HDR to catch multi-line column headers
             elif _starts_with_positive_int(tokens):
                 # First athlete line — finalise distances, switch state,
                 # and fall through to ATHLETE_DATA handling below.
-                state = "ATHLETE_DATA"
+                state = _State.ATHLETE_DATA
                 current_lines.append(line)
             # else: totals-header line like "Tot. 10+X X" — skip silently
             continue
@@ -403,11 +424,11 @@ def detect_sections(
         # ----------------------------------------------------------------
         # ATHLETE_DATA  — accumulate lines (continuation checked by assembler)
         # ----------------------------------------------------------------
-        if state == "ATHLETE_DATA":
+        if state is _State.ATHLETE_DATA:
             current_lines.append(line)
 
     # End of document — finalise last open section
-    if state == "ATHLETE_DATA":
+    if state is _State.ATHLETE_DATA:
         _finalise_section()
 
     if meta is None:

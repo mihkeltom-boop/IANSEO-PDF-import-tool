@@ -89,8 +89,8 @@ def make_athlete_rows_2end(
 class TestRowClassifiers(unittest.TestCase):
 
     def test_end_row_plain_distance(self):
-        self.assertTrue(_is_end_row(make_row(distance="70m"), []))
-        self.assertTrue(_is_end_row(make_row(distance="60m"), []))
+        self.assertTrue(_is_end_row(make_row(distance="70m")))
+        self.assertTrue(_is_end_row(make_row(distance="60m")))
 
     def test_half_subtotal_row_2x(self):
         self.assertTrue(_is_half_subtotal_row(make_row(distance="2x70m")))

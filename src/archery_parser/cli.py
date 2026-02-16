@@ -71,7 +71,9 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PDF",
         help="One or more Ianseo qualification protocol PDF files.",
     )
-    parser.add_argument(
+
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
         "--output", "-o",
         metavar="CSV",
         default=None,
@@ -80,12 +82,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "input PDF with a .csv extension."
         ),
     )
-    parser.add_argument(
+    output_group.add_argument(
         "--append",
         metavar="CSV",
         default=None,
         help="Append rows to an existing CSV file instead of overwriting.",
     )
+
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -97,6 +100,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Parse all PDFs but do not write any output file.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="Exit non-zero on arithmetic mismatches instead of just warning.",
     )
     parser.add_argument(
         "--log",
@@ -116,6 +125,10 @@ def _build_parser() -> argparse.ArgumentParser:
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
+class ParseError(Exception):
+    """Raised when a PDF cannot be parsed."""
+
+
 def _process_pdf(pdf_path: Path) -> tuple:
     """
     Run the full reader → detector → assembler pipeline for one PDF.
@@ -124,21 +137,17 @@ def _process_pdf(pdf_path: Path) -> tuple:
         (CompetitionMeta, list[AthleteRecord])
 
     Raises:
-        SystemExit(1) on FATAL errors (file not found, bad header).
+        ParseError: On file-not-found or parsing failures.
     """
-    logger = logging.getLogger(__name__)
-
     if not pdf_path.exists():
-        logger.error("FATAL  File not found: %s", pdf_path)
-        sys.exit(1)
+        raise ParseError(f"File not found: {pdf_path}")
 
     try:
-        lines   = extract_lines(pdf_path)
+        lines = extract_lines(pdf_path)
         meta, sections = detect_sections(lines)
         records = assemble_athletes(sections)
     except ValueError as exc:
-        logger.error("FATAL  %s: %s", pdf_path.name, exc)
-        sys.exit(1)
+        raise ParseError(f"{pdf_path.name}: {exc}") from exc
 
     return meta, records
 
@@ -180,7 +189,11 @@ def main(argv: list[str] | None = None) -> None:
 
     for pdf_str in args.input:
         pdf_path = Path(pdf_str)
-        meta, records = _process_pdf(pdf_path)
+        try:
+            meta, records = _process_pdf(pdf_path)
+        except ParseError as exc:
+            logger.error("FATAL  %s", exc)
+            sys.exit(1)
 
         if first_meta is None:
             first_meta = meta
@@ -200,5 +213,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         logger.info("cli  Dry-run: %d rows parsed, output not written.", len(all_rows))
     else:
-        write_csv(all_rows, output_path, append=append_mode)
+        try:
+            write_csv(
+                all_rows, output_path,
+                append=append_mode,
+                encoding=args.encoding,
+                strict=args.strict,
+            )
+        except ValueError as exc:
+            logger.error("FATAL  %s", exc)
+            sys.exit(1)
         logger.info("cli  Done. Output: %s", output_path)

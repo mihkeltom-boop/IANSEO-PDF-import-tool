@@ -64,6 +64,12 @@ def _parse_int(token: str) -> int | None:
     """
     Parse a token as an integer, stripping thousands separators.
     Returns None if the token is not numeric.
+
+    Both commas and periods are stripped because Ianseo PDFs may use
+    either as a thousands separator depending on locale (e.g. "1,238"
+    in English or "1.238" in European formats).  All score values in
+    archery are integers, so there is no risk of misinterpreting
+    decimal fractions.
     """
     cleaned = token.replace(",", "").replace(".", "")
     try:
@@ -333,10 +339,10 @@ def assemble_athletes(sections: list[RawSection]) -> list[AthleteRecord]:
         section_start_idx = len(records)
         current_group: list[list[Word]] = []
 
-        def _finalise() -> None:
-            if not current_group:
+        def _finalise(group: list[list[Word]], sec: RawSection = section) -> None:
+            if not group:
                 return
-            record = _parse_athlete_lines(current_group, section)
+            record = _parse_athlete_lines(group, sec)
             if record is not None:
                 records.append(record)
 
@@ -346,13 +352,13 @@ def assemble_athletes(sections: list[RawSection]) -> list[AthleteRecord]:
                 continue
 
             if _is_athlete_start(tokens):
-                _finalise()
+                _finalise(current_group)
                 current_group = [line]
             else:
                 current_group.append(line)
 
         # Finalise the last athlete in the section
-        _finalise()
+        _finalise(current_group)
 
         section_athlete_count = len(records) - section_start_idx
         logger.info(

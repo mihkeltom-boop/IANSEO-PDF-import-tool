@@ -5,8 +5,6 @@ Contains all mappings between Ianseo's Estonian/coded values and the
 canonical English strings used in CSV output.
 """
 
-from collections import Counter
-
 
 # ---------------------------------------------------------------------------
 # 7.1  Bow Type

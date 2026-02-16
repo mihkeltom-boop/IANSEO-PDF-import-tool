@@ -41,7 +41,7 @@ _HEADERS = [
 ]
 
 
-def _is_end_row(row: CSVRow, section_distances: list[str]) -> bool:
+def _is_end_row(row: CSVRow) -> bool:
     """
     Return True if this row represents an individual end score.
 
@@ -85,7 +85,7 @@ def _is_grand_total_row(row: CSVRow) -> bool:
     Simplest reliable heuristic: it is the grand total if it is NOT an
     end row and NOT a half-subtotal row.
     """
-    return not _is_end_row(row, []) and not _is_half_subtotal_row(row)
+    return not _is_end_row(row) and not _is_half_subtotal_row(row)
 
 
 def _verify_athlete_group(athlete_rows: list[CSVRow]) -> int:
@@ -195,18 +195,26 @@ def write_csv(
     rows: list[CSVRow],
     output_path: str | Path,
     append: bool = False,
+    encoding: str = "utf-8",
+    strict: bool = False,
 ) -> int:
     """
-    Verify all athlete row groups arithmetically, then write a UTF-8 CSV.
+    Verify all athlete row groups arithmetically, then write a CSV file.
 
     Args:
         rows:        List of CSVRow objects from transformer.transform().
         output_path: Destination file path.
         append:      If True, open in append mode and omit the header row.
                      If False (default), overwrite and write header.
+        encoding:    Output file encoding (default: utf-8).
+        strict:      If True, raise ValueError on arithmetic mismatches
+                     instead of just logging warnings.
 
     Returns:
         Number of data rows written (excluding the header row).
+
+    Raises:
+        ValueError: In strict mode, if any arithmetic mismatches are found.
     """
     output_path = Path(output_path)
 
@@ -216,14 +224,17 @@ def write_csv(
         total_mismatches += _verify_athlete_group(group)
 
     if total_mismatches:
+        msg = f"{total_mismatches} arithmetic mismatch(es) found"
+        if strict:
+            raise ValueError(f"writer  {msg} — aborting (strict mode).")
         logger.warning(
-            "writer  %d arithmetic mismatch(es) found — flagged rows still written.",
-            total_mismatches,
+            "writer  %s — flagged rows still written.",
+            msg,
         )
 
     # --- Write CSV -----------------------------------------------------------
     mode = "a" if append else "w"
-    with open(output_path, mode, newline="", encoding="utf-8") as fh:
+    with open(output_path, mode, newline="", encoding=encoding) as fh:
         writer = csv.writer(fh)
         if not append:
             writer.writerow(_HEADERS)

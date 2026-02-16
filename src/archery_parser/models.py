@@ -5,8 +5,9 @@ Defines the three primary internal objects (CompetitionMeta, SectionContext,
 AthleteRecord) plus the flat CSVRow that is the final output unit.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
+from typing import ClassVar
 
 
 @dataclass
@@ -138,21 +139,17 @@ class CSVRow:
     competition: str
 
     # Column order used when writing CSV headers and rows.
-    COLUMNS: list[str] = field(
-        default_factory=lambda: [
-            "Date",
-            "Athlete",
-            "Club",
-            "Bow Type",
-            "Age Class",
-            "Gender",
-            "Distance",
-            "Result",
-            "Competition",
-        ],
-        repr=False,
-        compare=False,
-    )
+    COLUMNS: ClassVar[list[str]] = [
+        "Date",
+        "Athlete",
+        "Club",
+        "Bow Type",
+        "Age Class",
+        "Gender",
+        "Distance",
+        "Result",
+        "Competition",
+    ]
 
     def as_row(self) -> list:
         """Return values in CSV column order."""
