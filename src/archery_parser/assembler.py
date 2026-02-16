@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 # Target code: digit-NNNLetter  e.g. "2-001A", "1-014C"
 _TARGET_CODE_RE = re.compile(r"^\d-\d{3}[A-Z]$")
 
+# Split target code: some PDFs render the target code as two tokens,
+# e.g. "1-" and "028B" instead of "1-028B".
+_TARGET_PREFIX_RE = re.compile(r"^\d-$")       # e.g. "1-"
+_TARGET_SUFFIX_RE = re.compile(r"^\d{3}[A-Z]$")  # e.g. "028B"
+
 # Club code: 2–6 uppercase ASCII letters (no digits, no lowercase)
 _CLUB_CODE_RE = re.compile(r"^[A-Z]{2,6}$")
 
@@ -62,7 +67,8 @@ def _is_positive_int(token: str) -> bool:
 
 def _parse_int(token: str) -> int | None:
     """
-    Parse a token as an integer, stripping thousands separators.
+    Parse a token as an integer, stripping thousands separators and
+    trailing rank indicators.
     Returns None if the token is not numeric.
 
     Both commas and periods are stripped because Ianseo PDFs may use
@@ -70,8 +76,14 @@ def _parse_int(token: str) -> int | None:
     in English or "1.238" in European formats).  All score values in
     archery are integers, so there is no risk of misinterpreting
     decimal fractions.
+
+    Trailing "/" is stripped because some Ianseo PDFs render end scores
+    with rank suffixes (e.g. "311/" where the rank follows as a separate
+    token).
     """
-    cleaned = token.replace(",", "").replace(".", "")
+    cleaned = token.replace(",", "").replace(".", "").rstrip("/")
+    if not cleaned:
+        return None
     try:
         return int(cleaned)
     except ValueError:
@@ -84,14 +96,23 @@ def _is_athlete_start(tokens: list[str]) -> bool:
 
     A line is an ATHLETE START if:
       1. Its first token is a positive integer (the position number), AND
-      2. Its second token matches the target-code pattern (\\d-\\d{3}[A-Z]).
+      2. Its second token matches the target-code pattern (\\d-\\d{3}[A-Z]),
+         OR tokens[1]+tokens[2] form a split target code ("1-" + "028B").
 
     This two-condition check avoids false matches on continuation lines that
     also begin with a positive integer (a score value).
     """
     if len(tokens) < 2:
         return False
-    return _is_positive_int(tokens[0]) and bool(_TARGET_CODE_RE.match(tokens[1]))
+    if not _is_positive_int(tokens[0]):
+        return False
+    # Full target code in one token
+    if _TARGET_CODE_RE.match(tokens[1]):
+        return True
+    # Split target code across two tokens: "1-" + "028B"
+    if len(tokens) >= 3 and _TARGET_PREFIX_RE.match(tokens[1]) and _TARGET_SUFFIX_RE.match(tokens[2]):
+        return True
+    return False
 
 
 def _collect_integers(tokens: list[str]) -> list[int]:
@@ -104,6 +125,50 @@ def _collect_integers(tokens: list[str]) -> list[int]:
         v = _parse_int(t)
         if v is not None:
             result.append(v)
+    return result
+
+
+def _has_rank_format(lines: list[list[Word]]) -> bool:
+    """
+    Return True if any continuation line contains "/"-suffixed score tokens.
+
+    This indicates the "rank format" where end scores are printed as e.g.
+    "311/ 1" (score 311, rank 1) and the header line contains grand_total,
+    10+X, X at its end.
+    """
+    for line in lines[1:]:
+        for w in line:
+            if w.text.endswith("/"):
+                return True
+    return False
+
+
+def _collect_continuation_integers(tokens: list[str]) -> list[int]:
+    """
+    Collect score integers from a rank-format continuation line, skipping
+    rank values.
+
+    In rank format, end scores have a "/" suffix (e.g. "311/") and the
+    next token is the rank (e.g. "1") which should be skipped.  Tokens
+    without "/" that aren't ranks are subtotals.
+
+    Example: ["311/", "1", "293/", "2", "604"] → [311, 293, 604]
+    """
+    result = []
+    skip_next = False
+    for t in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if t.endswith("/"):
+            v = _parse_int(t)
+            if v is not None:
+                result.append(v)
+            skip_next = True
+        else:
+            v = _parse_int(t)
+            if v is not None:
+                result.append(v)
     return result
 
 
@@ -225,10 +290,16 @@ def _parse_athlete_lines(
         logger.warning("assembler  Expected position integer, got '%s'", position_str)
         return None
 
-    # Target code
+    # Target code — may be a single token ("2-001A") or split ("1-" + "028B")
     target_code = ""
     if tokens and _TARGET_CODE_RE.match(tokens[0]):
         target_code = tokens.pop(0)
+    elif (
+        len(tokens) >= 2
+        and _TARGET_PREFIX_RE.match(tokens[0])
+        and _TARGET_SUFFIX_RE.match(tokens[1])
+    ):
+        target_code = tokens.pop(0) + tokens.pop(0)
 
     # Lastname
     if not tokens:
@@ -254,8 +325,9 @@ def _parse_athlete_lines(
                 class_code = tokens.pop(i)
                 break
         if not class_code:
-            logger.warning(
-                "assembler  No class code found for %s %s at position %d",
+            logger.debug(
+                "assembler  No class code found for %s %s at position %d"
+                " (will use section class)",
                 lastname, firstname, position,
             )
 
@@ -269,31 +341,69 @@ def _parse_athlete_lines(
 
     club_code, club_name = _parse_club(non_numeric)
 
+    # -----------------------------------------------------------------------
+    # Detect score format and collect integers accordingly
+    # -----------------------------------------------------------------------
+    rank_format = _has_rank_format(lines)
+
     # Score integers from line 1: only the remaining tokens (already past all
     # header fields — `tokens` now holds only the numeric score tokens).
-    score_integers: list[int] = _collect_integers(tokens)
+    header_integers: list[int] = _collect_integers(tokens)
 
-    # -----------------------------------------------------------------------
-    # Collect score integers from continuation lines (all tokens are scores)
-    # -----------------------------------------------------------------------
+    # Collect score integers from continuation lines
+    cont_integers: list[int] = []
     for cont_line in lines[1:]:
         cont_tokens = [w.text for w in cont_line]
-        score_integers.extend(_collect_integers(cont_tokens))
+        if rank_format:
+            cont_integers.extend(_collect_continuation_integers(cont_tokens))
+        else:
+            cont_integers.extend(_collect_integers(cont_tokens))
 
     # -----------------------------------------------------------------------
-    # Parse scores
+    # Parse scores — layout depends on format
     # -----------------------------------------------------------------------
-    if len(score_integers) < 3:
-        logger.warning(
-            "assembler  Insufficient score integers for %s %s: %s",
-            lastname, firstname, score_integers,
-        )
-        end_scores, half_totals, grand_total = [], [], 0
-        tens_plus_x, x_count = 0, 0
+    if rank_format and len(header_integers) >= 2:
+        # Rank format: header trailing ints are [scoring_index, 10+X, X].
+        # The first value is a scoring index (European decimal like "1,219"
+        # which gets parsed as 1219) — NOT the grand total.
+        # 10+X and X are the last two header integers.
+        tens_plus_x = header_integers[-2]
+        x_count     = header_integers[-1]
+
+        # Continuation integers follow [end_a, end_b, half_total] pattern
+        end_scores: list[int] = []
+        half_totals: list[int] = []
+        if len(cont_integers) == 2:
+            # 2-end round (72 arrows): [e1, e2] — no subtotals
+            end_scores = list(cont_integers)
+        else:
+            for i in range(0, len(cont_integers), 3):
+                group = cont_integers[i:i + 3]
+                if len(group) == 3:
+                    end_scores.append(group[0])
+                    end_scores.append(group[1])
+                    half_totals.append(group[2])
+                elif len(group) == 2:
+                    end_scores.extend(group)
+                elif len(group) == 1:
+                    end_scores.append(group[0])
+
+        # Grand total is computed from half totals (or end scores if no halves)
+        grand_total = sum(half_totals) if half_totals else sum(end_scores)
     else:
-        tens_plus_x = score_integers[-2]
-        x_count     = score_integers[-1]
-        end_scores, half_totals, grand_total = _parse_scores(score_integers)
+        # Original format: all ints combined, last 2 are 10+X and X
+        score_integers = header_integers + cont_integers
+        if len(score_integers) < 3:
+            logger.warning(
+                "assembler  Insufficient score integers for %s %s: %s",
+                lastname, firstname, score_integers,
+            )
+            end_scores, half_totals, grand_total = [], [], 0
+            tens_plus_x, x_count = 0, 0
+        else:
+            tens_plus_x = score_integers[-2]
+            x_count     = score_integers[-1]
+            end_scores, half_totals, grand_total = _parse_scores(score_integers)
 
     return AthleteRecord(
         position=position,

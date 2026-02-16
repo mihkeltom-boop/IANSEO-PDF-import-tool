@@ -69,7 +69,7 @@ class RawSection:
 # Internal Estonian → class-code lookup tables
 # ---------------------------------------------------------------------------
 
-# Age prefix tokens found in Estonian section titles.
+# Age prefix tokens found in Estonian/English section titles.
 # Maps to the prefix part of a class code (without gender suffix).
 _AGE_PREFIX: dict[str, str] = {
     "U21": "U21",
@@ -80,6 +80,17 @@ _AGE_PREFIX: dict[str, str] = {
     "Veteranid": "50",
     "50+": "50",
     "+50": "50",
+    "30": "30",
+}
+
+# Multi-word English age phrases found in Ianseo English section titles.
+# These map "Under NN" → "UNN" prefix (processed before single-token lookup).
+_ENGLISH_AGE_PHRASES: dict[str, str] = {
+    "Under 21": "U21",
+    "Under 18": "U18",
+    "Under 15": "U15",
+    "Under 13": "U13",
+    "Under 10": "U10",
 }
 
 # Gender tokens in Estonian section titles → M or W gender character.
@@ -106,6 +117,9 @@ def _parse_section_class_code(bow_prefix: str, remaining_tokens: list[str]) -> s
     Derive a class code (e.g. "M", "U18W", "50M", "HM") from the section
     title tokens that follow the bow-type prefix word.
 
+    Handles both Estonian tokens (e.g. "Mehed", "U18", "Poisid") and English
+    multi-word phrases (e.g. "- Under 18 Men", "- 50+ Women", "- 30 Men").
+
     Args:
         bow_prefix:       The first word of the section title (e.g. "Sportvibu").
         remaining_tokens: Remaining words after the bow-type prefix.
@@ -113,11 +127,27 @@ def _parse_section_class_code(bow_prefix: str, remaining_tokens: list[str]) -> s
     Returns:
         A class code string, or None if the gender token is not found.
     """
+    # Strip leading "-" separator (English titles: "Recurve - Men")
+    tokens = [t for t in remaining_tokens if t != "-"]
+
+    # Also strip "Continue" suffix (e.g. "Under 18 Men Continue" for overflow pages)
+    if tokens and tokens[-1].lower() == "continue":
+        tokens = tokens[:-1]
+
     age_prefix = ""
     gender_char = ""
 
-    for token in remaining_tokens:
-        if token in _AGE_PREFIX:
+    # Check for multi-word English age phrases first ("Under 18", etc.)
+    joined = " ".join(tokens)
+    for phrase, code in _ENGLISH_AGE_PHRASES.items():
+        if phrase in joined:
+            age_prefix = code
+            # Remove the phrase tokens so they don't interfere with gender detection
+            tokens = joined.replace(phrase, "").split()
+            break
+
+    for token in tokens:
+        if not age_prefix and token in _AGE_PREFIX:
             age_prefix = _AGE_PREFIX[token]
         elif token in _GENDER_TOKEN:
             gender_char = _GENDER_TOKEN[token]

@@ -46,6 +46,8 @@ AGE_CLASS: dict[str, str] = {
     "U10W": "U10",
     "50M": "+50",
     "50W": "+50",
+    "30M": "30",
+    "30W": "30",
     "HM": "Adult",
     "HW": "Adult",
 }
@@ -71,6 +73,8 @@ GENDER: dict[str, str] = {
     "U10W": "Women",
     "50M": "Men",
     "50W": "Women",
+    "30M": "Men",
+    "30W": "Women",
     "HM": "Men",
     "HW": "Women",
 }
