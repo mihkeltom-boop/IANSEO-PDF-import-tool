@@ -94,21 +94,24 @@ _ENGLISH_AGE_PHRASES: dict[str, str] = {
 }
 
 # Gender tokens in Estonian section titles → M or W gender character.
+# Keys are lowercase for case-insensitive matching.
 _GENDER_TOKEN: dict[str, str] = {
     # Estonian
-    "Mehed":     "M",   # Men (adult)
-    "Noormehed": "M",   # Young men (covers U18/U21 in some clubs)
-    "Poisid":    "M",   # Boys (U15 and below)
-    "Mees":      "M",   # Man (singular, rare)
-    "Naised":    "W",   # Women
-    "Neiud":     "W",   # Girls / young women
-    "Tüdrukud":  "W",   # Girls (U15 and below)
-    "Naine":     "W",   # Woman (singular, rare)
+    "mehed":        "M",   # Men (adult)
+    "noormehed":    "M",   # Young men (covers U18/U21 in some clubs)
+    "poisid":       "M",   # Boys (U15 and below)
+    "mees":         "M",   # Man (singular, rare)
+    "naised":       "W",   # Women
+    "neiud":        "W",   # Girls / young women
+    "tüdrukud":     "W",   # Girls (U15 and below)
+    "naine":        "W",   # Woman (singular, rare)
+    "täiskasvanud": "M",   # Adults (gender-neutral, default to M)
+    "algajad":      "M",   # Beginners (gender-neutral, default to M)
     # English (Ianseo English language setting)
-    "Men":       "M",
-    "Women":     "W",
-    "Boys":      "M",
-    "Girls":     "W",
+    "men":          "M",
+    "women":        "W",
+    "boys":         "M",
+    "girls":        "W",
 }
 
 
@@ -147,10 +150,18 @@ def _parse_section_class_code(bow_prefix: str, remaining_tokens: list[str]) -> s
             break
 
     for token in tokens:
+        token_lower = token.lower()
         if not age_prefix and token in _AGE_PREFIX:
             age_prefix = _AGE_PREFIX[token]
-        elif token in _GENDER_TOKEN:
-            gender_char = _GENDER_TOKEN[token]
+        elif token_lower in _GENDER_TOKEN:
+            gender_char = _GENDER_TOKEN[token_lower]
+            # Warn if using gender-neutral token (needs manual review)
+            if token_lower in ("täiskasvanud", "algajad"):
+                logger.warning(
+                    "detector  Gender-neutral token '%s' found; defaulting to M. "
+                    "Manual review recommended for accurate gender assignment.",
+                    token
+                )
 
     if not gender_char:
         return None
@@ -394,7 +405,7 @@ def detect_sections(
 
     def _finalise_section() -> None:
         """Commit current_lines into a completed RawSection and reset buffers."""
-        nonlocal current_distances, current_lines, current_class_code, current_bow_prefix
+        nonlocal current_distances, current_lines, current_class_code, current_bow_prefix, current_arrow_count
         if not current_class_code or not current_bow_prefix:
             return
         if current_class_code not in AGE_CLASS:
@@ -404,6 +415,15 @@ def detect_sections(
             )
             _reset_section()
             return
+
+        # Infer arrow count from number of distance columns if not set by sentinel
+        if current_arrow_count == 0 and current_distances:
+            # Each distance column typically represents 18 arrows (2 ends of 6 arrows)
+            current_arrow_count = len(current_distances) * 18
+            logger.info(
+                "detector  Arrow count inferred from %d distance columns: %d arrows",
+                len(current_distances), current_arrow_count
+            )
 
         dist_ctx = build_distance_context(current_distances)
         ctx = SectionContext(
@@ -467,8 +487,36 @@ def detect_sections(
             continue
 
         # ----------------------------------------------------------------
+        # BETWEEN  — waiting for "After N Arrows" OR a recognized bow-type prefix
+        # ----------------------------------------------------------------
         if state is _State.BETWEEN:
-            continue  # ignore everything until first "After N Arrows"
+            # Check if line starts with a known bow-type prefix (for PDFs without sentinels)
+            bow_prefix = tokens[0] if tokens else ""
+            if bow_prefix in BOW_TYPE:
+                # Treat this as a section title and transition directly
+                logger.info(
+                    "detector  No 'After N Arrows' sentinel found; "
+                    "inferring section start from bow type '%s'",
+                    bow_prefix
+                )
+                remaining = tokens[1:]
+                class_code = _parse_section_class_code(bow_prefix, remaining)
+                if class_code is None:
+                    logger.warning(
+                        "detector  Cannot determine class code from section title '%s' — section skipped.",
+                        " ".join(tokens),
+                    )
+                    state = _State.SKIP_SECTION
+                    continue
+
+                current_bow_prefix = bow_prefix
+                current_class_code = class_code
+                # Infer arrow count from first column header line (will be detected next)
+                current_arrow_count = 0
+                state = _State.EXPECT_COL_HDR
+                continue
+            # Otherwise, ignore line and stay in BETWEEN
+            continue
 
         # ----------------------------------------------------------------
         # EXPECT_TITLE  — next non-empty line is the section title

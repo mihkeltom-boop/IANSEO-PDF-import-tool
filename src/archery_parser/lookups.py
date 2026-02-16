@@ -96,9 +96,11 @@ def build_distance_context(distances: list[str]) -> dict:
 
     Args:
         distances: Ordered list of distance strings, one per end.
-                   Length must be even (2, 4, 6, or 8).
+                   Length must be even (2, 4, 6, or 8), OR a single distance
+                   (for single-distance 60-arrow rounds).
                    Example: ["70m", "70m", "70m", "70m"]
                    Example: ["40m", "40m", "30m", "30m"]
+                   Example: ["70m"] → treated as ["70m", "70m"]
 
     Returns:
         A dict with keys:
@@ -116,7 +118,15 @@ def build_distance_context(distances: list[str]) -> dict:
 
         >>> build_distance_context(["60m", "60m"])
         {'half_labels': [], 'total_label': '2x60m'}
+
+        >>> build_distance_context(["70m"])
+        {'half_labels': [], 'total_label': '70m'}
     """
+    # Handle single-distance format (e.g., 60 arrows at 70m)
+    if len(distances) == 1:
+        # Single distance: duplicate to make it a pair for processing
+        distances = distances * 2
+
     if len(distances) % 2 != 0:
         raise ValueError(
             f"distances list must have an even length, got {len(distances)}: {distances}"
