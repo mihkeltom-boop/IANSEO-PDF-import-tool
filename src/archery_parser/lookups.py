@@ -11,11 +11,17 @@ canonical English strings used in CSV output.
 # ---------------------------------------------------------------------------
 
 BOW_TYPE: dict[str, str] = {
+    # Estonian section titles
     "Sportvibu": "Recurve",
     "Plokkvibu": "Compound",
     "Vaistuvibu": "Barebow",
     "Pikkvibu": "Longbow",
     "Harrastajad": "Recurve",
+    # English section titles (used when Ianseo language is set to English)
+    "Recurve": "Recurve",
+    "Compound": "Compound",
+    "Barebow": "Barebow",
+    "Longbow": "Longbow",
 }
 """Maps the first word of an Ianseo section title (Estonian) to the canonical
 CSV bow-type string."""

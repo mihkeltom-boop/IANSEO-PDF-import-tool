@@ -136,7 +136,6 @@ def extract_lines(pdf_path: str | Path, y_tolerance: float = Y_TOLERANCE) -> lis
                 y_tolerance=3,
                 keep_blank_chars=False,
                 use_text_flow=False,
-                extra_attrs=["x0", "top", "x1", "bottom"],
             )
 
             page_words: list[Word] = []

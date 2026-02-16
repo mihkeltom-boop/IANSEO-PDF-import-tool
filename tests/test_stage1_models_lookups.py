@@ -195,7 +195,8 @@ class TestBowTypeLookup(unittest.TestCase):
     def test_completeness(self):
         self.assertEqual(
             set(BOW_TYPE.keys()),
-            {"Sportvibu", "Plokkvibu", "Vaistuvibu", "Pikkvibu", "Harrastajad"},
+            {"Sportvibu", "Plokkvibu", "Vaistuvibu", "Pikkvibu", "Harrastajad",
+             "Recurve", "Compound", "Barebow", "Longbow"},
         )
 
 

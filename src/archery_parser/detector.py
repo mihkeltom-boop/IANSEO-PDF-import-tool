@@ -84,6 +84,7 @@ _AGE_PREFIX: dict[str, str] = {
 
 # Gender tokens in Estonian section titles → M or W gender character.
 _GENDER_TOKEN: dict[str, str] = {
+    # Estonian
     "Mehed":     "M",   # Men (adult)
     "Noormehed": "M",   # Young men (covers U18/U21 in some clubs)
     "Poisid":    "M",   # Boys (U15 and below)
@@ -92,6 +93,11 @@ _GENDER_TOKEN: dict[str, str] = {
     "Neiud":     "W",   # Girls / young women
     "Tüdrukud":  "W",   # Girls (U15 and below)
     "Naine":     "W",   # Woman (singular, rare)
+    # English (Ianseo English language setting)
+    "Men":       "M",
+    "Women":     "W",
+    "Boys":      "M",
+    "Girls":     "W",
 }
 
 
@@ -162,12 +168,17 @@ def _parse_competition_header(header_lines: list[list[Word]]) -> CompetitionMeta
 
     # Line 3 — venue and dates
     line3_text = " ".join(w.text for w in header_lines[2])
-    # Venue is everything before the word "From"
+    # Venue is everything before "From" (multi-day) or before the first date (single-day)
     from_idx = line3_text.find("From")
     if from_idx != -1:
         venue = line3_text[:from_idx].strip().rstrip(",").rstrip()
     else:
-        venue = line3_text.strip()
+        # Single-day event: venue is text before the DD-MM-YYYY date
+        date_m = _DATE_RE.search(line3_text)
+        if date_m:
+            venue = line3_text[:date_m.start()].strip().rstrip(",").rstrip()
+        else:
+            venue = line3_text.strip()
 
     # Parse all DD-MM-YYYY dates from the line
     date_matches = _DATE_RE.findall(line3_text)
@@ -270,13 +281,14 @@ def detect_sections(
     if len(lines) < 3:
         raise ValueError("Input too short to contain a competition header.")
 
-    # Early validation: the third line should contain "From DD-MM-YYYY"
-    # which is characteristic of Ianseo qualification protocol headers.
+    # Early validation: the third line should contain a DD-MM-YYYY date,
+    # either as "From DD-MM-YYYY to DD-MM-YYYY" (multi-day) or as a bare
+    # date like "Venue, DD-MM-YYYY" (single-day event).
     line3_text = " ".join(w.text for w in lines[2])
-    if "From" not in line3_text or not _DATE_RE.search(line3_text):
+    if not _DATE_RE.search(line3_text):
         raise ValueError(
             "This does not appear to be an Ianseo qualification protocol: "
-            "expected 'From DD-MM-YYYY' in the third line of the document."
+            "expected a DD-MM-YYYY date in the third line of the document."
         )
 
     sections: list[RawSection] = []
