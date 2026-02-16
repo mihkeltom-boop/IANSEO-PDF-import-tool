@@ -281,11 +281,18 @@ def _parse_competition_header(header_lines: list[list[Word]]) -> CompetitionMeta
 # Column-header line helpers
 # ---------------------------------------------------------------------------
 
-_DIST_TOKEN_RE = re.compile(r"^(\d+m)-\d+$")   # matches e.g. "70m-1", "30m-4"
+# Matches distance tokens in two formats:
+#   - With suffix: "70m-1", "30m-4" (numbered columns)
+#   - Without suffix: "70m", "30m" (1440 round format)
+_DIST_TOKEN_RE = re.compile(r"^(\d+m)(?:-\d+)?$")
 
 
 def _is_column_header_line(tokens: list[str]) -> bool:
-    """Return True if the line contains at least one 'NNm-N' distance token."""
+    """
+    Return True if the line contains at least one distance token.
+
+    Matches both formats: "70m-1" (with suffix) and "70m" (plain).
+    """
     return any(_DIST_TOKEN_RE.match(t) for t in tokens)
 
 
@@ -293,7 +300,9 @@ def _extract_distances_from_line(tokens: list[str]) -> list[str]:
     """
     Return ordered list of distance strings from a column-header line.
 
-    e.g. ["70m-1", "70m-2", "Tot."] → ["70m", "70m"]
+    Handles both formats:
+      - With suffix: ["70m-1", "70m-2", "Tot."] → ["70m", "70m"]
+      - Plain: ["90m", "70m", "Tot."] → ["90m", "70m"]
     """
     distances = []
     for token in tokens:

@@ -94,6 +94,20 @@ def _expand_athlete(record: AthleteRecord, meta: CompetitionMeta) -> list[CSVRow
     gender      = ctx.gender
     competition = meta.name
 
+    def _get_distance(index: int) -> str:
+        """
+        Get distance label for a given end index.
+
+        If distances list is empty or index is out of range, return a
+        generic label based on the index.
+        """
+        if not ctx.distances:
+            return f"End-{index + 1}"
+        if index < len(ctx.distances):
+            return ctx.distances[index]
+        # Repeat last distance for overflow
+        return ctx.distances[-1]
+
     def _row(distance: str, result: int) -> CSVRow:
         return CSVRow(
             date=date_str,
@@ -123,8 +137,7 @@ def _expand_athlete(record: AthleteRecord, meta: CompetitionMeta) -> list[CSVRow
             # Two end rows
             for _ in range(2):
                 if end_idx < n_ends:
-                    dist = ctx.distances[end_idx] if end_idx < len(ctx.distances) else ctx.distances[-1]
-                    rows.append(_row(dist, record.end_scores[end_idx]))
+                    rows.append(_row(_get_distance(end_idx), record.end_scores[end_idx]))
                     end_idx += 1
             # Half-subtotal row
             if half_idx < len(record.half_totals):
@@ -133,14 +146,12 @@ def _expand_athlete(record: AthleteRecord, meta: CompetitionMeta) -> list[CSVRow
         # Any remaining end scores (shouldn't happen in standard rounds, but
         # be defensive for 6/8-end rounds where half_labels may be shorter).
         while end_idx < n_ends:
-            dist = ctx.distances[end_idx] if end_idx < len(ctx.distances) else ctx.distances[-1]
-            rows.append(_row(dist, record.end_scores[end_idx]))
+            rows.append(_row(_get_distance(end_idx), record.end_scores[end_idx]))
             end_idx += 1
     else:
         # 2-end round: just the two end rows (no half-subtotals).
         for i, score in enumerate(record.end_scores):
-            dist = ctx.distances[i] if i < len(ctx.distances) else ctx.distances[-1]
-            rows.append(_row(dist, score))
+            rows.append(_row(_get_distance(i), score))
 
     # Grand-total row always last.
     rows.append(_row(ctx.total_label, record.grand_total))
