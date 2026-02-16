@@ -130,13 +130,16 @@ def _collect_integers(tokens: list[str]) -> list[int]:
 
 def _has_rank_format(lines: list[list[Word]]) -> bool:
     """
-    Return True if any continuation line contains "/"-suffixed score tokens.
+    Return True if any line contains "/"-suffixed score tokens.
 
     This indicates the "rank format" where end scores are printed as e.g.
     "311/ 1" (score 311, rank 1) and the header line contains grand_total,
     10+X, X at its end.
+
+    Note: Check ALL lines including the first one, as some PDFs have all
+    score data on a single line.
     """
-    for line in lines[1:]:
+    for line in lines:
         for w in line:
             if w.text.endswith("/"):
                 return True
@@ -348,7 +351,11 @@ def _parse_athlete_lines(
 
     # Score integers from line 1: only the remaining tokens (already past all
     # header fields — `tokens` now holds only the numeric score tokens).
-    header_integers: list[int] = _collect_integers(tokens)
+    # If rank format is detected, use rank-aware parsing even for header line.
+    if rank_format:
+        header_integers: list[int] = _collect_continuation_integers(tokens)
+    else:
+        header_integers: list[int] = _collect_integers(tokens)
 
     # Collect score integers from continuation lines
     cont_integers: list[int] = []
@@ -363,33 +370,47 @@ def _parse_athlete_lines(
     # Parse scores — layout depends on format
     # -----------------------------------------------------------------------
     if rank_format and len(header_integers) >= 2:
-        # Rank format: header trailing ints are [scoring_index, 10+X, X].
-        # The first value is a scoring index (European decimal like "1,219"
-        # which gets parsed as 1219) — NOT the grand total.
-        # 10+X and X are the last two header integers.
+        # Rank format: scores have "/" suffix and ranks follow.
+        # 10+X and X are always the last two values.
         tens_plus_x = header_integers[-2]
         x_count     = header_integers[-1]
 
-        # Continuation integers follow [end_a, end_b, half_total] pattern
+        # Score values can be either:
+        # A) All on header line: [end_a, end_b, grand_total, 10+X, X]
+        # B) Split across lines: header = [scoring_index, 10+X, X],
+        #                        cont = [end_a, end_b, half_total, ...]
         end_scores: list[int] = []
         half_totals: list[int] = []
-        if len(cont_integers) == 2:
-            # 2-end round (72 arrows): [e1, e2] — no subtotals
-            end_scores = list(cont_integers)
-        else:
-            for i in range(0, len(cont_integers), 3):
-                group = cont_integers[i:i + 3]
-                if len(group) == 3:
-                    end_scores.append(group[0])
-                    end_scores.append(group[1])
-                    half_totals.append(group[2])
-                elif len(group) == 2:
-                    end_scores.extend(group)
-                elif len(group) == 1:
-                    end_scores.append(group[0])
 
-        # Grand total is computed from half totals (or end scores if no halves)
-        grand_total = sum(half_totals) if half_totals else sum(end_scores)
+        if cont_integers:
+            # Case B: Scores are on continuation lines
+            if len(cont_integers) == 2:
+                # 2-end round (72 arrows): [e1, e2] — no subtotals
+                end_scores = list(cont_integers)
+            else:
+                for i in range(0, len(cont_integers), 3):
+                    group = cont_integers[i:i + 3]
+                    if len(group) == 3:
+                        end_scores.append(group[0])
+                        end_scores.append(group[1])
+                        half_totals.append(group[2])
+                    elif len(group) == 2:
+                        end_scores.extend(group)
+                    elif len(group) == 1:
+                        end_scores.append(group[0])
+            # Grand total is computed from half totals (or end scores if no halves)
+            grand_total = sum(half_totals) if half_totals else sum(end_scores)
+        else:
+            # Case A: All scores on header line [e1, e2, grand_total, 10+X, X]
+            # Extract grand total (third from end) and end scores
+            if len(header_integers) >= 3:
+                grand_total = header_integers[-3]
+                # End scores are everything before grand_total, 10+X, X
+                end_scores = header_integers[:-3]
+            else:
+                # Degenerate case: too few values
+                grand_total = 0
+                end_scores = []
     else:
         # Original format: all ints combined, last 2 are 10+X and X
         score_integers = header_integers + cont_integers
