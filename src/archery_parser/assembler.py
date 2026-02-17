@@ -175,6 +175,42 @@ def _collect_continuation_integers(tokens: list[str]) -> list[int]:
     return result
 
 
+def _parse_rank_line_scores(tokens: list[str]) -> tuple[list[int], int]:
+    """
+    Parse one rank-format continuation line into (end_scores, subtotal).
+
+    Rank-format tokens have a "/" suffix (e.g. "285/"); the integer that
+    immediately follows is the within-line rank and is skipped.  All other
+    plain integers between the last ranked score and the end of the line are
+    also skipped — they are structural artefacts (e.g. the two "0 0" values
+    in Visa-HIng POST lines).  Only the **last** plain integer on the line
+    is treated as the line subtotal.
+
+    Example (Visa-HIng POST):
+        ["285/", "4", "283/", "3", "0", "0", "568"] → ([285, 283], 568)
+
+    Example (Puiatu-CUP PRE):
+        ["318/", "1", "293/", "1", "611"] → ([318, 293], 611)
+    """
+    end_scores: list[int] = []
+    last_plain: int | None = None
+    skip_next = False
+    for t in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if t.endswith("/"):
+            v = _parse_int(t)
+            if v is not None:
+                end_scores.append(v)
+            skip_next = True
+        else:
+            v = _parse_int(t)
+            if v is not None:
+                last_plain = v          # keep overwriting; final value is subtotal
+    return end_scores, (last_plain or 0)
+
+
 def _parse_scores(all_integers: list[int]) -> tuple[list[int], list[int], int]:
     """
     Split a flat list of score integers into (end_scores, half_totals, grand_total).
@@ -383,22 +419,25 @@ def _parse_athlete_lines(
         half_totals: list[int] = []
 
         if cont_integers:
-            # Case B: Scores are on continuation lines
-            if len(cont_integers) == 2:
-                # 2-end round (72 arrows): [e1, e2] — no subtotals
-                end_scores = list(cont_integers)
-            else:
-                for i in range(0, len(cont_integers), 3):
-                    group = cont_integers[i:i + 3]
-                    if len(group) == 3:
-                        end_scores.append(group[0])
-                        end_scores.append(group[1])
-                        half_totals.append(group[2])
-                    elif len(group) == 2:
-                        end_scores.extend(group)
-                    elif len(group) == 1:
-                        end_scores.append(group[0])
-            # Grand total is computed from half totals (or end scores if no halves)
+            # Case B: Scores are on continuation lines.
+            # Step 1 — collect end scores from each continuation line using
+            # per-line parsing.  This correctly handles:
+            #   • Lines with more than 2 ends (e.g. Visa-HIng PRE with 4 ends).
+            #   • Spurious plain integers in POST lines (e.g. "0 0" in Visa-HIng
+            #     "285/ 4 283/ 3 0 0 568") — only the last plain integer on each
+            #     line is the line subtotal; it is used for verification only.
+            for cont_line in lines[1:]:
+                cont_tokens = [w.text for w in cont_line]
+                line_ends, _ = _parse_rank_line_scores(cont_tokens)
+                end_scores.extend(line_ends)
+            # Step 2 — derive half-totals from consecutive pairs of end scores.
+            # This always produces the correct granularity (one half-total per
+            # 2-end pair) regardless of how many ends appeared on each PDF line.
+            # E.g. Visa-HIng PRE has 4 ends → 2 half-totals computed here.
+            half_totals = [
+                end_scores[i] + end_scores[i + 1]
+                for i in range(0, len(end_scores) - 1, 2)
+            ]
             grand_total = sum(half_totals) if half_totals else sum(end_scores)
         else:
             # Case A: All scores on header line [e1, e2, grand_total, 10+X, X]
@@ -483,8 +522,24 @@ def assemble_athletes(sections: list[RawSection]) -> list[AthleteRecord]:
                 continue
 
             if _is_athlete_start(tokens):
-                _finalise(current_group)
-                current_group = [line]
+                if current_group and _is_athlete_start([w.text for w in current_group[0]]):
+                    # current_group already has an anchor (the previous athlete).
+                    # In rank-format PDFs the line immediately before a new anchor
+                    # is a pre-score line belonging to THIS new athlete — detect and
+                    # carry it forward rather than finalising it with the old athlete.
+                    pre_scores: list = []
+                    if len(current_group) > 1:
+                        last_toks = [w.text for w in current_group[-1]]
+                        if last_toks and last_toks[0].endswith("/"):
+                            pre_scores = [current_group.pop()]
+                    _finalise(current_group)
+                    current_group = [line] + pre_scores
+                else:
+                    # current_group contains only pre-score lines that arrived
+                    # before the first anchor in this section.  They belong to
+                    # THIS athlete — keep them as continuation lines.
+                    pre_scores = list(current_group)
+                    current_group = [line] + pre_scores
             else:
                 current_group.append(line)
 

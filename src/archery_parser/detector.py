@@ -345,11 +345,15 @@ def _match_after_arrows(tokens: list[str]) -> int | None:
 # ---------------------------------------------------------------------------
 
 def _starts_with_positive_int(tokens: list[str]) -> bool:
-    """Return True if the first token of the line is a positive integer."""
+    """Return True if the first token of the line is a positive integer.
+
+    Strips a trailing "/" before parsing so that rank-format score tokens
+    like "290/" are correctly recognised (int("290/") would raise ValueError).
+    """
     if not tokens:
         return False
     try:
-        return int(tokens[0]) > 0
+        return int(tokens[0].rstrip("/")) > 0
     except ValueError:
         return False
 
