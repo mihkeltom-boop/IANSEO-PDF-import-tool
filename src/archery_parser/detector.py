@@ -168,6 +168,10 @@ def _parse_section_class_code(bow_prefix: str, remaining_tokens: list[str]) -> s
     # Strip leading "-" separator (English titles: "Recurve - Men")
     tokens = [t for t in remaining_tokens if t != "-"]
 
+    # Normalize "U-NN" age tokens to "UNN" (e.g. "U-21" → "U21", "U-18" → "U18").
+    # Some Estonian PDFs write age classes with a dash inside the token.
+    tokens = [re.sub(r"^[Uu]-(\d+)$", r"U\1", t) for t in tokens]
+
     # Also strip "Continue" suffix (e.g. "Under 18 Men Continue" for overflow pages)
     if tokens and tokens[-1].lower() == "continue":
         tokens = tokens[:-1]
@@ -505,6 +509,36 @@ def detect_sections(
         current_class_code = ""
         current_bow_prefix = ""
 
+    def _start_section_from_title(toks: list[str]) -> None:
+        """
+        Parse a bow-type section title and set up state for the new section.
+
+        Used in BETWEEN, SKIP_SECTION, and ATHLETE_DATA states for PDFs that
+        use bow-type titles as section boundaries (no 'After N Arrows' lines).
+        Sets state to EXPECT_COL_HDR on success, SKIP_SECTION on failure.
+        """
+        nonlocal state, current_bow_prefix, current_class_code, current_arrow_count
+        bow_prefix = toks[0]
+        remaining = toks[1:]
+        logger.info(
+            "detector  No 'After N Arrows' sentinel found; "
+            "inferring section start from bow type '%s'",
+            bow_prefix,
+        )
+        class_code = _parse_section_class_code(bow_prefix, remaining)
+        if class_code is None:
+            logger.warning(
+                "detector  Cannot determine class code from section title '%s' "
+                "— section skipped.",
+                " ".join(toks),
+            )
+            state = _State.SKIP_SECTION
+            return
+        current_bow_prefix = bow_prefix
+        current_class_code = class_code
+        current_arrow_count = 0
+        state = _State.EXPECT_COL_HDR
+
     for line in lines:
         tokens = [w.text for w in line]
         if not tokens:
@@ -550,30 +584,8 @@ def detect_sections(
         # BETWEEN  — waiting for "After N Arrows" OR a recognized bow-type prefix
         # ----------------------------------------------------------------
         if state is _State.BETWEEN:
-            # Check if line starts with a known bow-type prefix (for PDFs without sentinels)
-            bow_prefix = tokens[0] if tokens else ""
-            if bow_prefix in BOW_TYPE:
-                # Treat this as a section title and transition directly
-                logger.info(
-                    "detector  No 'After N Arrows' sentinel found; "
-                    "inferring section start from bow type '%s'",
-                    bow_prefix
-                )
-                remaining = tokens[1:]
-                class_code = _parse_section_class_code(bow_prefix, remaining)
-                if class_code is None:
-                    logger.warning(
-                        "detector  Cannot determine class code from section title '%s' — section skipped.",
-                        " ".join(tokens),
-                    )
-                    state = _State.SKIP_SECTION
-                    continue
-
-                current_bow_prefix = bow_prefix
-                current_class_code = class_code
-                # Infer arrow count from first column header line (will be detected next)
-                current_arrow_count = 0
-                state = _State.EXPECT_COL_HDR
+            if tokens and tokens[0] in BOW_TYPE:
+                _start_section_from_title(tokens)
                 continue
             # Otherwise, ignore line and stay in BETWEEN
             continue
@@ -633,9 +645,14 @@ def detect_sections(
             continue
 
         # ----------------------------------------------------------------
-        # SKIP_SECTION  — discard until "After N Arrows" (handled above)
+        # SKIP_SECTION  — discard until "After N Arrows" (handled above).
+        # In PDFs without sentinels, recover on any recognized bow-type prefix.
         # ----------------------------------------------------------------
         if state is _State.SKIP_SECTION:
+            if not (tokens and tokens[0] in BOW_TYPE):
+                continue
+            # Bow-type title found — start a new section (same logic as BETWEEN).
+            _start_section_from_title(tokens)
             continue
 
         # ----------------------------------------------------------------
@@ -655,15 +672,22 @@ def detect_sections(
             continue
 
         # ----------------------------------------------------------------
-        # ATHLETE_DATA  — accumulate lines (continuation checked by assembler)
+        # ATHLETE_DATA  — accumulate lines (continuation checked by assembler).
+        # In PDFs without "After N Arrows" sentinels a new bow-type title
+        # signals the section boundary.
         # ----------------------------------------------------------------
         if state is _State.ATHLETE_DATA:
-            token_set = frozenset(tokens)
-            is_header_reprint = any(
-                token_set == hset for hset in header_token_sets
-            )
-            if not _is_page_footer(tokens) and not is_header_reprint:
-                current_lines.append(line)
+            if tokens and tokens[0] in BOW_TYPE:
+                _finalise_section()
+                _start_section_from_title(tokens)
+            else:
+                token_set = frozenset(tokens)
+                is_header_reprint = any(
+                    token_set == hset for hset in header_token_sets
+                )
+                if not _is_page_footer(tokens) and not is_header_reprint:
+                    current_lines.append(line)
+            continue
 
     # End of document — finalise last open section
     if state is _State.ATHLETE_DATA:
