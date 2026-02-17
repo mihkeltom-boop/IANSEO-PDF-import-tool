@@ -557,5 +557,178 @@ class TestClassCodes(unittest.TestCase):
         self.assertEqual(self._make_athlete("HM").class_code, "HM")
 
 
+# ---------------------------------------------------------------------------
+# Digit-contamination detection tests
+#
+# These tests replicate two real parsing bugs seen in production CSVs where
+# the club_name field ends up containing digits.
+# ---------------------------------------------------------------------------
+
+class TestDigitInClubFromCompactRankScore(unittest.TestCase):
+    """
+    Replicates the bug observed in EnMV2025_protokoll.pdf where scores in
+    compact rank format ("200/11" — no space between score and rank) are not
+    recognised as numeric tokens and fall through into the club-name field.
+
+    Real example line:
+        10 2- 008A OJAMETS Ardo U18M PVM Pärnu Meelis 200/11 220/10 420 1 0
+
+    The tokens "200/11" and "220/10" are not parsed as integers by _parse_int()
+    (the "/" is in the middle, not at the end) and are therefore treated as
+    text, ending up in the club_name.
+
+    Expected club_name without bug: "Pärnu Meelis"
+    Actual club_name with bug: "Pärnu Meelis 200/11 220/10"
+
+    The validation check should log a warning about a digit in club_name.
+    """
+
+    def _build(self):
+        # Simulate the compact rank format: scores are "200/11" style (no space)
+        # instead of "200/ 11" (separate tokens).
+        section = make_section(
+            bow_type="Recurve",
+            age_class="U18",
+            gender="Men",
+            arrow_count=72,
+            distances=["30m", "30m"],
+            half_labels=[],
+            total_label="2x30m",
+            lines=[
+                make_line(
+                    "10", "2-008A", "OJAMETS", "Ardo", "U18M",
+                    "PVM", "Pärnu", "Meelis",
+                    "200/11", "220/10",   # compact rank tokens — not parseable as ints
+                    "420", "1", "0",
+                    y=10.0,
+                ),
+            ],
+        )
+        return assemble_athletes([section])
+
+    def test_produces_one_record(self):
+        records = self._build()
+        self.assertEqual(len(records), 1)
+
+    def test_club_name_contains_digit(self):
+        """Demonstrates that compact rank scores bleed into club_name."""
+        records = self._build()
+        club = records[0].club_name or ""
+        import re
+        self.assertTrue(
+            re.search(r'\d', club),
+            f"Expected digit in club_name to demonstrate bug, got: {club!r}",
+        )
+
+    def test_warning_logged_for_digit_in_club(self):
+        """The digit-in-club validation must log a warning."""
+        import logging
+        with self.assertLogs("archery_parser.assembler", level="WARNING") as cm:
+            self._build()
+        digit_warnings = [m for m in cm.output if "Digit found in club" in m]
+        self.assertTrue(
+            digit_warnings,
+            "Expected a warning about digit in club_name, got none.\n"
+            f"All warnings: {cm.output}",
+        )
+
+    def test_warning_names_the_athlete(self):
+        """Warning message must identify which athlete is affected."""
+        import logging
+        with self.assertLogs("archery_parser.assembler", level="WARNING") as cm:
+            self._build()
+        combined = "\n".join(cm.output)
+        self.assertIn("OJAMETS", combined)
+
+
+class TestDigitInClubFromMiddleName(unittest.TestCase):
+    """
+    Replicates the bug observed in EsKV25_protokoll.pdf where an athlete with
+    a middle name (three-part name: LASTNAME Firstname Middlename) causes the
+    middle name to be absorbed into the club field.  Because the club token
+    scanner is shifted by the unexpected extra name token, the compact rank
+    score "242/11" (no space between score and rank) also lands in club_name.
+
+    Real example line (single-line format):
+        9 3- 006C LEPIK Lisete Laureen W VVVK Vana-Võidu VK 242/11 268/ 5 510 15 26
+
+    The assembler reads: lastname=LEPIK, firstname=Lisete, then scans for a
+    class code.  "Laureen" is not a known code so the scanner skips it and
+    finds "W".  "Laureen" is then passed to the club parser together with
+    "VVVK", "Vana-Võidu", "VK", and — because "242/11" is not parseable as
+    an integer — also "242/11", producing:
+        club_name="Laureen VVVK Vana-Võidu VK 242/11"
+
+    The presence of "268/" (trailing slash) makes the line appear as rank
+    format to _has_rank_format(), which further confuses score extraction.
+
+    The validation check should log a warning about a digit in club_name.
+    """
+
+    def _build(self):
+        # Single-line format matching the real EsKV25 layout.
+        # "268/" triggers rank-format detection; "242/11" (compact, no space)
+        # is not parsed as a number and bleeds into club_name.
+        section = make_section(
+            bow_type="Recurve",
+            age_class="Adult",
+            gender="Women",
+            arrow_count=144,
+            distances=["70m", "70m", "70m", "70m"],
+            half_labels=["2x70m", "2x70m"],
+            total_label="4x70m",
+            lines=[
+                make_line(
+                    "9", "3-006C", "LEPIK", "Lisete", "Laureen",
+                    "W", "VVVK", "Vana-Võidu", "VK",
+                    "242/11", "268/", "5", "510", "15", "26",
+                    y=10.0,
+                ),
+            ],
+        )
+        return assemble_athletes([section])
+
+    def test_produces_one_record(self):
+        records = self._build()
+        self.assertEqual(len(records), 1)
+
+    def test_club_or_name_contains_digit(self):
+        """Demonstrates that the middle-name bug causes digit contamination."""
+        records = self._build()
+        import re
+        all_fields = " ".join([
+            records[0].firstname,
+            records[0].lastname,
+            records[0].club_code or "",
+            records[0].club_name or "",
+        ])
+        self.assertTrue(
+            re.search(r'\d', all_fields),
+            f"Expected digit in a name/club field to demonstrate bug, "
+            f"got: firstname={records[0].firstname!r} "
+            f"club_name={records[0].club_name!r}",
+        )
+
+    def test_warning_logged_for_digit(self):
+        """The validation check must log a warning."""
+        import logging
+        with self.assertLogs("archery_parser.assembler", level="WARNING") as cm:
+            self._build()
+        digit_warnings = [m for m in cm.output if "Digit found in" in m]
+        self.assertTrue(
+            digit_warnings,
+            "Expected a digit-in-field warning, got none.\n"
+            f"All warnings: {cm.output}",
+        )
+
+    def test_warning_names_the_athlete(self):
+        """Warning message must identify which athlete is affected."""
+        import logging
+        with self.assertLogs("archery_parser.assembler", level="WARNING") as cm:
+            self._build()
+        combined = "\n".join(cm.output)
+        self.assertIn("LEPIK", combined)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

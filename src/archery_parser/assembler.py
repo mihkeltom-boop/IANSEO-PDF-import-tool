@@ -561,6 +561,10 @@ def assemble_athletes(sections: list[RawSection]) -> list[AthleteRecord]:
             records[section_start_idx:], section.context,
         )
 
+        # Validate: names and club fields must not contain digits.
+        for rec in records[section_start_idx:]:
+            _validate_no_digits_in_name_or_club(rec)
+
     return records
 
 
@@ -605,4 +609,39 @@ def _validate_section_result_counts(
                 section_label,
                 rec.firstname, rec.lastname,
                 actual_halves, expected_halves,
+            )
+
+
+def _validate_no_digits_in_name_or_club(rec: AthleteRecord) -> None:
+    """
+    Warn if an athlete's name or club field contains a digit.
+
+    Digits in these fields indicate a parsing error.  Two known causes:
+
+    1. Compact rank-format scores (e.g. "200/11" with no space between
+       score and rank) are not recognised as numeric tokens and fall
+       through into the club-name parser.
+
+    2. A middle name (extra token after the recognised firstname) causes
+       that token to be absorbed into the club field, which then also
+       sweeps in trailing score tokens.
+
+    Legitimate athlete names and club names never contain digits.
+    """
+    _has_digit = re.compile(r'\d')
+
+    athlete_label = f"{rec.firstname} {rec.lastname}"
+
+    for field_name, value in (
+        ("firstname", rec.firstname),
+        ("lastname",  rec.lastname),
+        ("club_code", rec.club_code or ""),
+        ("club_name", rec.club_name or ""),
+    ):
+        if _has_digit.search(value):
+            logger.warning(
+                "assembler  Digit found in %s for athlete %s: %r — "
+                "likely a parsing error (score absorbed into field, "
+                "or unrecognised middle name)",
+                field_name, athlete_label, value,
             )
