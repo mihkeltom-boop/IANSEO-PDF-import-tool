@@ -77,9 +77,14 @@ _AGE_PREFIX: dict[str, str] = {
     "U15": "U15",
     "U13": "U13",
     "U10": "U10",
+    "U8": "U8",
     "Veteranid": "50",
     "50+": "50",
     "+50": "50",
+    "60+": "60",
+    "+60": "60",
+    "70+": "70",
+    "+70": "70",
     "30": "30",
 }
 
@@ -91,6 +96,7 @@ _ENGLISH_AGE_PHRASES: dict[str, str] = {
     "Under 15": "U15",
     "Under 13": "U13",
     "Under 10": "U10",
+    "Under 8": "U8",
 }
 
 # Gender tokens in Estonian section titles → M or W gender character.
@@ -140,6 +146,13 @@ def _parse_section_class_code(bow_prefix: str, remaining_tokens: list[str]) -> s
     age_prefix = ""
     gender_char = ""
 
+    # Direct class code match: if a single token is already a known class
+    # code (e.g. "U13M", "60W"), use it immediately.  This handles section
+    # titles like "Sportvibu - U13M" where the age+gender is one token.
+    for token in tokens:
+        if token in AGE_CLASS:
+            return token
+
     # Check for multi-word English age phrases first ("Under 18", etc.)
     joined = " ".join(tokens)
     for phrase, code in _ENGLISH_AGE_PHRASES.items():
@@ -164,7 +177,14 @@ def _parse_section_class_code(bow_prefix: str, remaining_tokens: list[str]) -> s
                 )
 
     if not gender_char:
-        return None
+        # No gender token found (e.g. "Recurve - Under 21", "Barebow - Under 18").
+        # Default to M with a warning, same behaviour as gender-neutral "täiskasvanud".
+        logger.warning(
+            "detector  No gender token in section title '%s'; "
+            "defaulting to M. Manual review recommended.",
+            " ".join(remaining_tokens),
+        )
+        gender_char = "M"
 
     # Harrastajad (hobby archers) use class codes HM / HW.
     if bow_prefix == "Harrastajad":
@@ -528,12 +548,38 @@ def detect_sections(
         if state is _State.EXPECT_TITLE:
             bow_prefix = tokens[0]
             if bow_prefix not in BOW_TYPE:
-                logger.warning(
-                    "detector  Unknown bow type '%s' in section title '%s' — section skipped.",
-                    bow_prefix, " ".join(tokens),
-                )
-                state = _State.SKIP_SECTION
-                continue
+                # Section title may start with an age prefix instead of a bow
+                # type (e.g. "U8 Poisid" or "U15 Tüdrukud").  In that case,
+                # treat ALL tokens as remaining and use the previous section's
+                # bow type if available, otherwise default to "Recurve".
+                if bow_prefix in _AGE_PREFIX:
+                    logger.info(
+                        "detector  Section title '%s' starts with age prefix "
+                        "'%s'; inheriting bow type from previous section.",
+                        " ".join(tokens), bow_prefix,
+                    )
+                    bow_prefix = current_bow_prefix or "Recurve"
+                    remaining = tokens  # all tokens (including the age prefix)
+                    class_code = _parse_section_class_code(bow_prefix, remaining)
+                    if class_code is None:
+                        logger.warning(
+                            "detector  Cannot determine class code from section title '%s' — section skipped.",
+                            " ".join(tokens),
+                        )
+                        state = _State.SKIP_SECTION
+                        continue
+
+                    current_bow_prefix = bow_prefix
+                    current_class_code = class_code
+                    state = _State.EXPECT_COL_HDR
+                    continue
+                else:
+                    logger.warning(
+                        "detector  Unknown bow type '%s' in section title '%s' — section skipped.",
+                        bow_prefix, " ".join(tokens),
+                    )
+                    state = _State.SKIP_SECTION
+                    continue
 
             remaining = tokens[1:]
             class_code = _parse_section_class_code(bow_prefix, remaining)

@@ -387,8 +387,8 @@ class TestUnknownSectionLogsWarningAndContinues(unittest.TestCase):
         self.assertEqual(len(sections), 1)
         self.assertEqual(sections[0].context.bow_type, "Compound")
 
-    def test_unknown_class_code_skips_section(self):
-        """A section with a known bow type but unparseable gender still skips."""
+    def test_unknown_gender_defaults_to_m(self):
+        """A section with a known bow type but no gender token defaults to M."""
         stream = _make_full_stream(
             _COMP_HEADER,
             [{
@@ -402,8 +402,10 @@ class TestUnknownSectionLogsWarningAndContinues(unittest.TestCase):
         )
         with self.assertLogs("archery_parser.detector", level="WARNING") as cm:
             _, sections = detect_sections(stream)
-        self.assertEqual(len(sections), 0)
-        self.assertTrue(any("class code" in msg.lower() or "Cannot determine" in msg for msg in cm.output))
+        # Section is now parsed (defaulting gender to M) instead of skipped.
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0].context.gender, "Men")
+        self.assertTrue(any("defaulting to M" in msg for msg in cm.output))
 
 
 # ---------------------------------------------------------------------------

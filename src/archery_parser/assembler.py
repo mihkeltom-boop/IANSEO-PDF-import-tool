@@ -52,6 +52,12 @@ _TARGET_SUFFIX_RE = re.compile(r"^\d{3}[A-Z]$")  # e.g. "028B"
 # Club code: 2–6 uppercase ASCII letters (no digits, no lowercase)
 _CLUB_CODE_RE = re.compile(r"^[A-Z]{2,6}$")
 
+# Compact rank token: score/rank packed without a space, e.g. "200/11",
+# "260/10", "94/15".  These appear in some Ianseo PDFs instead of the
+# normal "260/" + "10" (two tokens) layout.  Must be recognised as numeric
+# to avoid bleeding into the club-name field.
+_COMPACT_RANK_RE = re.compile(r"^\d+/\s*\d+$")
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -130,11 +136,11 @@ def _collect_integers(tokens: list[str]) -> list[int]:
 
 def _has_rank_format(lines: list[list[Word]]) -> bool:
     """
-    Return True if any line contains "/"-suffixed score tokens.
+    Return True if any line contains rank-format score tokens.
 
-    This indicates the "rank format" where end scores are printed as e.g.
-    "311/ 1" (score 311, rank 1) and the header line contains grand_total,
-    10+X, X at its end.
+    Rank format is indicated by:
+      - Trailing-slash tokens like "311/" (score 311, rank follows as next token)
+      - Compact rank tokens like "200/11" (score and rank packed in one token)
 
     Note: Check ALL lines including the first one, as some PDFs have all
     score data on a single line.
@@ -142,6 +148,8 @@ def _has_rank_format(lines: list[list[Word]]) -> bool:
     for line in lines:
         for w in line:
             if w.text.endswith("/"):
+                return True
+            if _COMPACT_RANK_RE.match(w.text):
                 return True
     return False
 
@@ -152,10 +160,12 @@ def _collect_continuation_integers(tokens: list[str]) -> list[int]:
     rank values.
 
     In rank format, end scores have a "/" suffix (e.g. "311/") and the
-    next token is the rank (e.g. "1") which should be skipped.  Tokens
-    without "/" that aren't ranks are subtotals.
+    next token is the rank (e.g. "1") which should be skipped.  Compact
+    rank tokens (e.g. "200/11") encode score and rank in a single token —
+    the score part before the "/" is extracted and the rank is discarded.
 
     Example: ["311/", "1", "293/", "2", "604"] → [311, 293, 604]
+    Example: ["200/11", "220/10", "420"]        → [200, 220, 420]
     """
     result = []
     skip_next = False
@@ -163,7 +173,16 @@ def _collect_continuation_integers(tokens: list[str]) -> list[int]:
         if skip_next:
             skip_next = False
             continue
-        if t.endswith("/"):
+        m = _COMPACT_RANK_RE.match(t)
+        if m:
+            # Compact rank: extract score (before "/"), discard rank
+            score_str = t.split("/")[0]
+            try:
+                result.append(int(score_str))
+            except ValueError:
+                pass
+            # No skip_next — rank is in the same token
+        elif t.endswith("/"):
             v = _parse_int(t)
             if v is not None:
                 result.append(v)
@@ -199,7 +218,15 @@ def _parse_rank_line_scores(tokens: list[str]) -> tuple[list[int], int]:
         if skip_next:
             skip_next = False
             continue
-        if t.endswith("/"):
+        m = _COMPACT_RANK_RE.match(t)
+        if m:
+            # Compact rank: score/rank in one token, e.g. "200/11"
+            score_str = t.split("/")[0]
+            try:
+                end_scores.append(int(score_str))
+            except ValueError:
+                pass
+        elif t.endswith("/"):
             v = _parse_int(t)
             if v is not None:
                 end_scores.append(v)
@@ -353,7 +380,10 @@ def _parse_athlete_lines(
     else:
         firstname = tokens.pop(0)
 
-    # Class code — next token if it's a known AGE_CLASS key
+    # Class code — next token if it's a known AGE_CLASS key.
+    # If the class code is not immediately next, scan forward — any tokens
+    # between the firstname and the class code are middle names (e.g.
+    # "LEPIK Lisete Laureen W VVVK" → firstname becomes "Lisete Laureen").
     class_code = ""
     if tokens and tokens[0] in AGE_CLASS:
         class_code = tokens.pop(0)
@@ -361,7 +391,12 @@ def _parse_athlete_lines(
         # Scan forward for a known class code
         for i, t in enumerate(tokens):
             if t in AGE_CLASS:
-                class_code = tokens.pop(i)
+                # Tokens before the class code are middle names — absorb them
+                # into firstname so they don't leak into the club field.
+                middle_parts = [tokens.pop(0) for _ in range(i)]
+                if middle_parts:
+                    firstname = firstname + " " + " ".join(middle_parts)
+                class_code = tokens.pop(0)
                 break
         if not class_code:
             logger.debug(
@@ -370,11 +405,20 @@ def _parse_athlete_lines(
                 lastname, firstname, position,
             )
 
-    # Club — non-numeric tokens before the first score
+    # Some athletes carry a second class code on the line (e.g. a U15
+    # athlete competing in the U21 section: "U21W U15W").  Consume any
+    # additional class code tokens so they don't leak into the club field.
+    while tokens and tokens[0] in AGE_CLASS:
+        tokens.pop(0)
+
+    # Club — non-numeric tokens before the first score.
+    # A token is considered "numeric" (= score boundary) if _parse_int()
+    # succeeds OR if it matches the compact rank pattern "NNN/NN".
     non_numeric: list[str] = []
     while tokens:
-        v = _parse_int(tokens[0])
-        if v is not None:
+        if _parse_int(tokens[0]) is not None:
+            break
+        if _COMPACT_RANK_RE.match(tokens[0]):
             break
         non_numeric.append(tokens.pop(0))
 
