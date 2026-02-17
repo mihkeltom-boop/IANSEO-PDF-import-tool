@@ -32,7 +32,7 @@ from dataclasses import dataclass
 
 from archery_parser.detector import RawSection
 from archery_parser.lookups import AGE_CLASS
-from archery_parser.models import AthleteRecord
+from archery_parser.models import AthleteRecord, SectionContext
 from archery_parser.reader import Word
 
 logger = logging.getLogger(__name__)
@@ -500,4 +500,54 @@ def assemble_athletes(sections: list[RawSection]) -> list[AthleteRecord]:
             section_athlete_count,
         )
 
+        # Validate: all athletes in the same section must have the same
+        # number of end scores, matching the expected count from distances.
+        _validate_section_result_counts(
+            records[section_start_idx:], section.context,
+        )
+
     return records
+
+
+def _validate_section_result_counts(
+    section_records: list[AthleteRecord],
+    context: SectionContext,
+) -> None:
+    """
+    Warn if athletes in a section have inconsistent result counts.
+
+    All athletes in one section shot the same round, so they must all
+    have the same number of end scores.  The expected count equals the
+    number of distances defined in the section context.
+
+    Also checks half-total counts against the expected value derived
+    from end count (one half-total per pair of ends).
+    """
+    if not section_records:
+        return
+
+    expected_ends = len(context.distances)
+    expected_halves = expected_ends // 2 if expected_ends > 2 else 0
+    section_label = f"{context.bow_type}/{context.age_class}/{context.gender}"
+
+    for rec in section_records:
+        actual_ends = len(rec.end_scores)
+        actual_halves = len(rec.half_totals)
+
+        if actual_ends != expected_ends:
+            logger.warning(
+                "assembler  Result count mismatch in %s: "
+                "%s %s has %d end scores, expected %d",
+                section_label,
+                rec.firstname, rec.lastname,
+                actual_ends, expected_ends,
+            )
+
+        if actual_halves != expected_halves:
+            logger.warning(
+                "assembler  Result count mismatch in %s: "
+                "%s %s has %d half-totals, expected %d",
+                section_label,
+                rec.firstname, rec.lastname,
+                actual_halves, expected_halves,
+            )
