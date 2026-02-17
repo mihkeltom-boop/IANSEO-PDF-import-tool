@@ -584,7 +584,13 @@ def assemble_athletes(sections: list[RawSection]) -> list[AthleteRecord]:
                     pre_scores: list = []
                     if len(current_group) > 1:
                         last_toks = [w.text for w in current_group[-1]]
-                        if last_toks and last_toks[0].endswith("/"):
+                        # Carry forward if the last line starts with a
+                        # rank-format score token — either trailing-slash
+                        # ("246/") or compact rank ("196/10").
+                        if last_toks and (
+                            last_toks[0].endswith("/")
+                            or bool(_COMPACT_RANK_RE.match(last_toks[0]))
+                        ):
                             pre_scores = [current_group.pop()]
                     _finalise(current_group)
                     current_group = [line] + pre_scores
