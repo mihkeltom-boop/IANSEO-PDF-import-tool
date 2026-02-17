@@ -517,5 +517,95 @@ class TestCompetitionMetaReturnedCorrectly(unittest.TestCase):
         self.assertEqual(meta.date_end, date(2025, 9, 14))
 
 
+# ---------------------------------------------------------------------------
+# Fix #1 — page footer / header-reprint lines are filtered from athlete data
+# ---------------------------------------------------------------------------
+
+class TestPageFooterFiltered(unittest.TestCase):
+    """
+    Ianseo PDFs emit a pagination footer at the bottom of every page, e.g.:
+
+        "3/11 Qualification Round - Individual - 2025-09-13 11:45"
+
+    These were previously absorbed as continuation score lines.  After Fix #1
+    they must not appear in section.lines.
+    """
+
+    _SECTION = {
+        "arrow_count": 144,
+        "title_tokens": ["Sportvibu", "Mehed"],
+        "col_hdr_rows": [
+            ["70m-1", "70m-2", "Tot."],
+            ["70m-3", "70m-4", "Tot."],
+            ["Tot.", "10+X", "X"],
+        ],
+        "athlete_rows": [
+            ["1", "2-001A", "RIST", "Martin", "M", "VVVK", "318", "293", "611"],
+            ["314", "313", "627", "1,238", "26", "10"],
+        ],
+    }
+
+    def _build_stream_with_footer(self, footer_tokens: list[str]) -> list[list[Word]]:
+        """Insert a footer line between the two athlete rows."""
+        lines = list(_COMP_HEADER)
+        lines.append(make_line("After", "144", "Arrows"))
+        lines.append(make_line(*self._SECTION["title_tokens"]))
+        for row in self._SECTION["col_hdr_rows"]:
+            lines.append(make_line(*row))
+        # First athlete line
+        lines.append(make_line(*self._SECTION["athlete_rows"][0]))
+        # Footer line injected between athletes
+        lines.append(make_line(*footer_tokens))
+        # Second athlete line (continuation scores)
+        lines.append(make_line(*self._SECTION["athlete_rows"][1]))
+        return lines
+
+    def test_ianseo_pagination_footer_excluded(self):
+        """'3/11 Qualification Round...' must not be in section.lines."""
+        footer = ["3/11", "Qualification", "Round", "-", "Individual"]
+        stream = self._build_stream_with_footer(footer)
+        _, sections = detect_sections(stream)
+        self.assertEqual(len(sections), 1)
+        # Without filtering: 3 lines (athlete1, footer, athlete2).
+        # With filtering:    2 lines (athlete1, athlete2).
+        self.assertEqual(len(sections[0].lines), 2)
+
+    def test_class_division_footer_excluded(self):
+        """'2/5 Class & Division Result List...' must not be in section.lines."""
+        footer = ["2/5", "Class", "&", "Division", "Result", "List"]
+        stream = self._build_stream_with_footer(footer)
+        _, sections = detect_sections(stream)
+        self.assertEqual(len(sections[0].lines), 2)
+
+    def test_tcpdf_credit_excluded(self):
+        """'Powered by TCPDF (www.tcpdf.org)' must not be in section.lines."""
+        footer = ["Powered", "by", "TCPDF", "(www.tcpdf.org)"]
+        stream = self._build_stream_with_footer(footer)
+        _, sections = detect_sections(stream)
+        self.assertEqual(len(sections[0].lines), 2)
+
+    def test_header_reprint_excluded(self):
+        """
+        Competition header lines re-printed at the top of each page
+        must not appear in section.lines.
+        """
+        lines = list(_COMP_HEADER)
+        lines.append(make_line("After", "144", "Arrows"))
+        lines.append(make_line(*self._SECTION["title_tokens"]))
+        for row in self._SECTION["col_hdr_rows"]:
+            lines.append(make_line(*row))
+        # First athlete line
+        lines.append(make_line(*self._SECTION["athlete_rows"][0]))
+        # Simulated page break: competition header lines re-printed verbatim
+        for hline in _COMP_HEADER:
+            lines.append(hline)
+        # Second athlete line after the reprinted header
+        lines.append(make_line(*self._SECTION["athlete_rows"][1]))
+        _, sections = detect_sections(lines)
+        self.assertEqual(len(sections), 1)
+        # 3 header lines must be excluded; only the 2 athlete lines remain.
+        self.assertEqual(len(sections[0].lines), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

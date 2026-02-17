@@ -35,6 +35,35 @@ from archery_parser.reader import Word
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Page footer detection
+# ---------------------------------------------------------------------------
+
+# Ianseo PDFs end every page with a footer of the form:
+#   "3/11 Qualification Round - Individual - 20250323.132941+02:00"
+#   "1/5  Class & Division Result List - Individual - 20250809..."
+# The leading "N/M" fraction matches _COMPACT_RANK_RE in the assembler,
+# causing the footer to be treated as a continuation score line.
+# We detect and discard these lines before they reach the assembler.
+_PAGE_FOOTER_RE = re.compile(
+    r"^\d+/\d+\s+(?:Qualification|Class|Division|Result)",
+    re.IGNORECASE,
+)
+
+
+def _is_page_footer(tokens: list[str]) -> bool:
+    """Return True if this line is an Ianseo page footer or document credit."""
+    if not tokens:
+        return False
+    # "N/M Qualification Round..." / "N/M Class & Division..."
+    line_text = " ".join(tokens)
+    if _PAGE_FOOTER_RE.match(line_text):
+        return True
+    # PDF library credit line: "Powered by TCPDF (www.tcpdf.org)"
+    if tokens[0].lower() == "powered" and any("tcpdf" in t.lower() for t in tokens):
+        return True
+    return False
+
 
 class _State(enum.Enum):
     """States for the section-detection state machine."""
@@ -419,6 +448,9 @@ def detect_sections(
     # State machine
     state = _State.HEADER
     header_buf: list[list[Word]] = []
+    # Token-sets for the 3 competition header lines, used to detect
+    # re-printed page headers in ATHLETE_DATA state.
+    header_token_sets: list[frozenset[str]] = []
 
     # Per-section working state
     current_arrow_count: int = 0
@@ -489,6 +521,10 @@ def detect_sections(
                     logger.info("detector  Competition: %s", meta.name)
                 except Exception as exc:
                     raise ValueError(f"Failed to parse competition header: {exc}") from exc
+                # Store token sets for header lines so we can filter re-prints.
+                header_token_sets = [
+                    frozenset(w.text for w in hline) for hline in header_buf
+                ]
                 state = _State.BETWEEN
             continue
 
@@ -622,7 +658,12 @@ def detect_sections(
         # ATHLETE_DATA  — accumulate lines (continuation checked by assembler)
         # ----------------------------------------------------------------
         if state is _State.ATHLETE_DATA:
-            current_lines.append(line)
+            token_set = frozenset(tokens)
+            is_header_reprint = any(
+                token_set == hset for hset in header_token_sets
+            )
+            if not _is_page_footer(tokens) and not is_header_reprint:
+                current_lines.append(line)
 
     # End of document — finalise last open section
     if state is _State.ATHLETE_DATA:

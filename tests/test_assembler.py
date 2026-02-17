@@ -685,5 +685,89 @@ class TestMiddleNameAbsorbedIntoFirstname(unittest.TestCase):
         self.assertEqual(records[0].club_name, "Vana-Võidu VK")
 
 
+class TestZeroFillerStripped(unittest.TestCase):
+    """
+    Fix #2: Single-distance rank-format PDFs include a zero filler column for
+    the non-existent second end.  E.g. "543/ 1 0 543 8 0" — the 0 is a blank
+    placeholder.  It must be stripped so end_scores=[543], not [543, 0].
+
+    Real example from Jarvakandi-Kand-Eelring.pdf:
+        1 1- 009A LILIENTHAL Triinu JVI Järvakandi Ilves 543/ 1 0 543 8 0
+    """
+
+    def _build(self):
+        section = make_section(
+            bow_type="Recurve",
+            age_class="Adult",
+            gender="Men",
+            arrow_count=60,
+            distances=["70m"],
+            half_labels=[],
+            total_label="70m",
+            lines=[
+                make_line(
+                    "1", "1-009A", "LILIENTHAL", "Triinu",
+                    "JVI", "Järvakandi", "Ilves",
+                    "543/", "1", "0", "543", "8", "0",
+                    y=10.0,
+                ),
+            ],
+        )
+        return assemble_athletes([section])
+
+    def test_produces_one_record(self):
+        self.assertEqual(len(self._build()), 1)
+
+    def test_zero_filler_stripped(self):
+        """Zero placeholder for the absent second end must be removed."""
+        self.assertEqual(self._build()[0].end_scores, [543])
+
+    def test_grand_total_correct(self):
+        self.assertEqual(self._build()[0].grand_total, 543)
+
+
+class TestNoHalfTotalsIn2EndRankFormat(unittest.TestCase):
+    """
+    Fix #3: In a 2-end rank-format round, Case B previously paired the two
+    end scores into a half-total.  For a 2-end round there are no intermediate
+    half-subtotals — only end scores and a grand total.
+
+    Real example from Puiatu-CUP (U10 section, 2x10m):
+        Hugo RIST: pre-line "296/ 1 296", header "590 12 4", post-line "294/ 2 294"
+    """
+
+    def _build(self):
+        section = make_section(
+            bow_type="Recurve",
+            age_class="U10",
+            gender="Men",
+            arrow_count=40,
+            distances=["10m", "10m"],
+            half_labels=[],
+            total_label="2x10m",
+            lines=[
+                # pre-score line (continuation that arrives before the next start)
+                make_line("296/", "1", "296", y=9.0),
+                make_line(
+                    "1", "1-028A", "RIST", "Hugo", "U10M", "VVVK",
+                    "590", "12", "4",
+                    y=10.0,
+                ),
+                make_line("294/", "2", "294", y=11.0),
+            ],
+        )
+        return assemble_athletes([section])
+
+    def test_produces_one_record(self):
+        self.assertEqual(len(self._build()), 1)
+
+    def test_no_half_totals(self):
+        """2-end round must not produce any half-total values."""
+        self.assertEqual(self._build()[0].half_totals, [])
+
+    def test_end_scores(self):
+        self.assertEqual(sorted(self._build()[0].end_scores), [294, 296])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

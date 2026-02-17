@@ -116,6 +116,23 @@ class TestRowClassifiers(unittest.TestCase):
         # and the "2x60m" grand total.  The writer handles this correctly.
         self.assertTrue(_is_half_subtotal_row(make_row(distance="2x60m")))
 
+    # Fix #4 — 1440 mixed-distance half labels ("90m+70m") must be recognised
+    # as half-subtotals, not grand totals.
+
+    def test_1440_half_label_90m_70m_is_half(self):
+        """'90m+70m' is a 1440-round half-subtotal label (contains '+', no 'x')."""
+        self.assertTrue(_is_half_subtotal_row(make_row(distance="90m+70m")))
+
+    def test_1440_half_label_50m_30m_is_half(self):
+        """'50m+30m' is the second 1440-round half-subtotal label."""
+        self.assertTrue(_is_half_subtotal_row(make_row(distance="50m+30m")))
+
+    def test_1440_half_label_is_not_end_row(self):
+        self.assertFalse(_is_end_row(make_row(distance="90m+70m")))
+
+    def test_1440_half_label_is_not_grand_total(self):
+        self.assertFalse(_is_grand_total_row(make_row(distance="90m+70m")))
+
 
 # ---------------------------------------------------------------------------
 # Required test: correct totals → no warnings
@@ -309,6 +326,67 @@ class TestMismatchedRowsStillWritten(unittest.TestCase):
             self.assertEqual(count, 7)
         finally:
             os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Fix #4 — 1440-round arithmetic verifies correctly with mixed-distance halves
+# ---------------------------------------------------------------------------
+
+class Test1440RoundVerification(unittest.TestCase):
+    """
+    The 1440 round has four distances (90m, 70m, 50m, 30m), each shot once.
+    The writer must recognise 'Nm+Mm' labels as half-subtotals so that:
+      - half 1 check: end(90m) + end(70m) == subtotal(90m+70m)
+      - half 2 check: end(50m) + end(30m) == subtotal(50m+30m)
+      - grand total:  subtotal(90m+70m) + subtotal(50m+30m) == grand
+    """
+
+    def _make_1440_rows(
+        self,
+        e90: int = 320, e70: int = 310,
+        h1: int = 630,
+        e50: int = 295, e30: int = 280,
+        h2: int = 575,
+        grand: int = 1205,
+        athlete: str = "Eve Suitsu",
+    ) -> list[CSVRow]:
+        return [
+            make_row(athlete=athlete, distance="90m",      result=e90),
+            make_row(athlete=athlete, distance="70m",      result=e70),
+            make_row(athlete=athlete, distance="90m+70m",  result=h1),
+            make_row(athlete=athlete, distance="50m",      result=e50),
+            make_row(athlete=athlete, distance="30m",      result=e30),
+            make_row(athlete=athlete, distance="50m+30m",  result=h2),
+            make_row(athlete=athlete, distance="1x90m+1x70m+1x50m+1x30m", result=grand),
+        ]
+
+    def test_correct_1440_no_mismatch(self):
+        rows = self._make_1440_rows()
+        with self.assertNoLogs("archery_parser.writer", level="WARNING"):
+            mismatches = _verify_athlete_group(rows)
+        self.assertEqual(mismatches, 0)
+
+    def test_1440_half1_mismatch_logged(self):
+        rows = self._make_1440_rows(h1=629)  # should be 630
+        with self.assertLogs("archery_parser.writer", level="WARNING") as cm:
+            mismatches = _verify_athlete_group(rows)
+        self.assertGreater(mismatches, 0)
+        self.assertTrue(any("Mismatch" in msg for msg in cm.output))
+
+    def test_1440_half2_mismatch_logged(self):
+        rows = self._make_1440_rows(h2=574)  # should be 575
+        with self.assertLogs("archery_parser.writer", level="WARNING") as cm:
+            mismatches = _verify_athlete_group(rows)
+        self.assertGreater(mismatches, 0)
+
+    def test_1440_grand_total_mismatch_logged(self):
+        rows = self._make_1440_rows(grand=1200)  # should be 1205
+        with self.assertLogs("archery_parser.writer", level="WARNING") as cm:
+            mismatches = _verify_athlete_group(rows)
+        self.assertGreater(mismatches, 0)
+        combined = " ".join(cm.output)
+        self.assertIn("1205", combined)
+        self.assertIn("1200", combined)
 
 
 if __name__ == "__main__":

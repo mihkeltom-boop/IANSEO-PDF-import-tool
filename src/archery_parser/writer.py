@@ -56,14 +56,23 @@ def _is_half_subtotal_row(row: CSVRow) -> bool:
     """
     Return True if this row is a half-subtotal row.
 
-    Half-subtotal labels start with a digit and contain exactly one "x"
-    but no "+".  e.g. "2x70m", "2x40m".
-    Grand-total labels either have just one "x" AND no "+" (uniform),
-    or have "+" (mixed).  We distinguish halves from grand-totals by
-    checking whether the numeric prefix is 2.
+    Two label styles indicate a half-subtotal:
+
+    1. ``"2xNm"`` — uniform-distance half, e.g. "2x70m", "2x40m".
+       Detected by: contains "x", no "+", numeric prefix == 2.
+
+    2. ``"Nm+Mm"`` — mixed-distance half used by the 1440 round,
+       e.g. "90m+70m", "50m+30m".
+       Detected by: contains "+", does NOT contain "x".
+       (Grand-total labels for the 1440 always contain both "x" and "+",
+       e.g. "1x90m+1x70m+1x50m+1x30m", so they are excluded by the
+       "no x" check.)
     """
     d = row.distance
-    # Must contain "x" but not "+"
+    # Style 2: "Nm+Mm" — contains "+" but no "x"
+    if "+" in d and "x" not in d:
+        return True
+    # Style 1: "2xNm" — contains "x" but no "+"
     if "x" not in d or "+" in d:
         return False
     try:

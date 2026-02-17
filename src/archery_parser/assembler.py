@@ -475,21 +475,31 @@ def _parse_athlete_lines(
                 line_ends, _ = _parse_rank_line_scores(cont_tokens)
                 end_scores.extend(line_ends)
             # Step 2 — derive half-totals from consecutive pairs of end scores.
-            # This always produces the correct granularity (one half-total per
-            # 2-end pair) regardless of how many ends appeared on each PDF line.
-            # E.g. Visa-HIng PRE has 4 ends → 2 half-totals computed here.
-            half_totals = [
-                end_scores[i] + end_scores[i + 1]
-                for i in range(0, len(end_scores) - 1, 2)
-            ]
+            # Only produced for rounds with 4+ ends (e.g. Visa-HIng PRE with 4
+            # ends → 2 half-totals).  2-end rounds have no intermediate half-
+            # subtotal regardless of how many continuation lines were present.
+            if len(end_scores) >= 4:
+                half_totals = [
+                    end_scores[i] + end_scores[i + 1]
+                    for i in range(0, len(end_scores) - 1, 2)
+                ]
+            else:
+                half_totals = []
             grand_total = sum(half_totals) if half_totals else sum(end_scores)
         else:
             # Case A: All scores on header line [e1, e2, grand_total, 10+X, X]
             # Extract grand total (third from end) and end scores
             if len(header_integers) >= 3:
                 grand_total = header_integers[-3]
-                # End scores are everything before grand_total, 10+X, X
-                end_scores = header_integers[:-3]
+                # End scores are everything before grand_total, 10+X, X.
+                # Some single-distance rank-format PDFs include a zero filler
+                # column for the non-existent second end, e.g.:
+                #   "543/ 1  0  543  8  0"  → end_scores=[543, 0]
+                # Strip trailing zeros because 0 is never a valid archery end.
+                raw_ends = header_integers[:-3]
+                while raw_ends and raw_ends[-1] == 0:
+                    raw_ends.pop()
+                end_scores = raw_ends
             else:
                 # Degenerate case: too few values
                 grand_total = 0
